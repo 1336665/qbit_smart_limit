@@ -1,0 +1,19 @@
+{
+    "host": "http://127.0.0.1:8080",
+    "username": "admin",
+    "password": "YOUR_PASSWORD_HERE",
+    "target_speed_kib": 51200,
+    "safety_margin": 0.98,
+    "log_level": "INFO",
+    "target_tracker_keyword": "",
+    "exclude_tracker_keyword": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "max_physical_speed_kib": 0,
+    "api_rate_limit": 20,
+    "u2_cookie": "",
+    "proxy": "",
+    "peer_list_enabled": true,
+    "enable_dl_limit": true,
+    "enable_reannounce_opt": true
+}
