@@ -1,5 +1,7 @@
+import os
+
 class C:
-    VERSION = "11.0.0 PRO"
+    VERSION = "11.1.0 PRO"
     
     PHASE_WARMUP = "warmup"
     PHASE_CATCH = "catch"
@@ -69,3 +71,17 @@ class C:
     # TG Bot 轮询
     TG_POLL_INTERVAL = 2
     COOKIE_CHECK_INTERVAL = 3600
+
+    # === 新增路径配置 ===
+    # 自动获取项目根目录 (src 的上一级)
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    # FlexGet 路径
+    FLEXGET_DIR = os.path.join(BASE_DIR, "flexget")
+    FLEXGET_CONFIG = os.path.join(FLEXGET_DIR, "config.yml")
+    FLEXGET_LOG = "/var/log/qsl-flexget.log"
+    
+    # AutoRemove 路径
+    AUTORM_DIR = os.path.join(BASE_DIR, "autoremove")
+    AUTORM_RULES = os.path.join(AUTORM_DIR, "rules.json")
+    AUTORM_STATE = os.path.join(AUTORM_DIR, "state.json")
