@@ -184,8 +184,12 @@ class TelegramBot:
             self.send_immediate("用法: /config <qb_host|qb_user|qb_pass> <val>")
             return
         k, v = parts
-        if k in ['qb_host', 'qb_user', 'qb_pass'] and self.controller:
-            self.controller.db.save_runtime_config(f"override_{{'qb_host':'host','qb_user':'username','qb_pass':'password'}[k]}", v)
+        
+        # 修复后的逻辑
+        config_map = {'qb_host': 'host', 'qb_user': 'username', 'qb_pass': 'password'}
+        
+        if k in config_map and self.controller:
+            self.controller.db.save_runtime_config(f"override_{config_map[k]}", v)
             self.send_immediate(f"✅ {k} 已更新，重启生效")
 
     def _cmd_stats(self, args: str):
