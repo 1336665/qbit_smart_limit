@@ -13,8 +13,7 @@ class NativeRssWorker(threading.Thread):
         super().__init__(name="NativeRSS", daemon=True)
         self.c = controller
         self.history = set()
-        # 核心修改：检测是否存在历史记录文件
-        # 如果不存在，说明是"首次运行"，我们将启用"基准化模式"（只标记不下载）
+        # 首次运行判断：如果没有历史文件，视为首次运行
         self.is_first_run = not os.path.exists(C.RSS_HISTORY)
         self._load_history()
         
@@ -41,7 +40,6 @@ class NativeRssWorker(threading.Thread):
         return 0
 
     def get_download_link(self, item):
-        """优先获取 enclosure (附件) 链接"""
         enclosure = item.find('enclosure')
         if enclosure is not None:
             url = enclosure.get('url')
@@ -65,7 +63,6 @@ class NativeRssWorker(threading.Thread):
         except Exception: return False
 
     def download_torrent_file(self, url, cookie_dict):
-        """使用 Cookie 下载 .torrent 文件"""
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             resp = requests.get(url, cookies=cookie_dict, headers=headers, timeout=20)
@@ -100,6 +97,10 @@ class NativeRssWorker(threading.Thread):
             if cookie_str:
                 cookie_dict = {k.strip(): v.strip() for k, v in (c.split('=', 1) for c in cookie_str.split(';') if '=' in c)}
 
+            # === 获取配置: 是否优先下载首尾块 ===
+            # 默认为 False，需要在 feeds.json 里开启
+            first_last_prio = feed.get('first_last_piece', False) 
+            
             try:
                 resp = requests.get(feed_url, timeout=30)
                 if resp.status_code != 200: 
@@ -121,13 +122,11 @@ class NativeRssWorker(threading.Thread):
                     
                     if dl_link in self.history: continue
 
-                    # === 核心逻辑修改：首次运行模式 ===
+                    # 首次运行跳过逻辑
                     if self.is_first_run:
-                        # 如果是首次运行，只加入历史记录，不下载
                         self.history.add(dl_link)
                         skipped_count += 1
                         continue
-                    # =================================
                     
                     if feed.get('must_contain') and feed['must_contain'].lower() not in title.lower(): continue
                     
@@ -142,16 +141,26 @@ class NativeRssWorker(threading.Thread):
                             continue
 
                     success = False
+                    
+                    # === 添加种子时传入 first_last_piece_prio 参数 ===
                     if cookie_dict:
                         torrent_data = self.download_torrent_file(dl_link, cookie_dict)
                         if torrent_data:
-                            self.c.client.torrents_add(torrent_files=torrent_data, category=feed.get('category', 'Racing'))
+                            self.c.client.torrents_add(
+                                torrent_files=torrent_data, 
+                                category=feed.get('category', 'Racing'),
+                                first_last_piece_prio=first_last_prio  # 关键参数
+                            )
                             success = True
                             logger.info(f"RSS Add (File): {title}")
                         else:
                             logger.error(f"Failed to download .torrent: {title}")
                     else:
-                        self.c.client.torrents_add(urls=dl_link, category=feed.get('category', 'Racing'))
+                        self.c.client.torrents_add(
+                            urls=dl_link, 
+                            category=feed.get('category', 'Racing'),
+                            first_last_piece_prio=first_last_prio  # 关键参数
+                        )
                         success = True
                         logger.info(f"RSS Add (URL): {title}")
 
@@ -166,13 +175,11 @@ class NativeRssWorker(threading.Thread):
             except Exception as e: 
                 logger.error(f"RSS Process Error: {e}")
 
-        # === 首次运行结束处理 ===
         if self.is_first_run:
-            self.is_first_run = False # 关闭首次运行标志
-            self._save_history() # 保存所有已跳过的种子到历史记录
+            self.is_first_run = False
+            self._save_history()
             if skipped_count > 0:
-                logger.info(f"✨ 首次运行初始化完成：已跳过 {skipped_count} 个现有种子，等待新发布...")
-        # ====================
+                logger.info(f"✨ 首次运行初始化完成：已跳过 {skipped_count} 个现有种子")
 
         duration = wall_time() - start_time
         if total_added > 0:
@@ -234,11 +241,9 @@ class AutoRemoveWorker(threading.Thread):
             
             for idx, r in enumerate(rules):
                 should_delete = True
-                
                 if r.get("min_free_gb", 0) > 0 and free_space >= float(r["min_free_gb"])*1024**3: should_delete = False
                 if r.get("require_complete") and t.progress < 0.999: should_delete = False
                 if r.get("max_up_bps", 0) > 0 and upspeed > int(r["max_up_bps"]): should_delete = False
-                
                 if r.get("max_dl_bps", 0) > 0 and dlspeed > int(r["max_dl_bps"]): should_delete = False
                 if r.get("min_dl_up_ratio", 0) > 0:
                     if upspeed > 0 and dlspeed <= upspeed * float(r["min_dl_up_ratio"]): should_delete = False
@@ -267,10 +272,8 @@ class AutoRemoveWorker(threading.Thread):
                 if hasattr(self.c, 'notifier'): self.c.notifier.autoremove_notify(info)
                 self.c.client.torrents_delete(delete_files=True, torrent_hashes=t.hash)
                 self.c.db.delete_torrent_state(t.hash)
-                
                 keys_to_rm = [k for k in self.state["since"] if k.startswith(t.hash)]
                 for k in keys_to_rm: del self.state["since"][k]
-                
                 logger.warning(f"Deleted: {t.name} [{reason}]")
                 try:
                     with open(C.AUTORM_LOG, "a") as lf:
