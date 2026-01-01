@@ -38,52 +38,33 @@ class NativeRssWorker(threading.Thread):
         return 0
 
     def check_free_via_cookie(self, url, cookie_str):
-        """
-        仅通过 Cookie 抓取页面检测是否免费
-        """
         if not cookie_str: return False
-        
         try:
-            # 解析 Cookie
             cookie_dict = {}
             for c in cookie_str.split(';'):
                 if '=' in c:
                     k, v = c.split('=', 1)
                     cookie_dict[k.strip()] = v.strip()
             
-            # 随机休眠 1~2 秒，模拟真人，防止被站点防火墙判定为 CC 攻击
             time.sleep(1.5)
-            
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': url
             }
             
-            # 发起请求
-            # logger.info(f"🔍 正在抓取页面验证免费: {url}") # 调试时可开启
+            # logger.info(f"🔍 正在抓取页面验证免费: {url}")
             resp = requests.get(url, cookies=cookie_dict, headers=headers, timeout=15)
             
             if resp.status_code == 200:
                 html = resp.text
-                # === 核心检测逻辑 ===
-                # 这里包含了绝大多数 NexusPHP 站点的免费特征码
-                # 只要页面里出现任意一个，就判定为免费
                 free_tags = [
-                    'class="pro_free"',       # 标准 NexusPHP 免费
-                    'class="pro_free2up"',    # 2x免费
-                    'alt="Free"',             # 图标 Alt 标签
-                    'alt="2xFree"',
-                    '<font class="free">',    # 旧版架构
-                    '[免费]',                  # 某些站点纯文本
-                    '[2X免费]'
+                    'class="pro_free"', 'class="pro_free2up"',
+                    'alt="Free"', 'alt="2xFree"',
+                    '<font class="free">', '[免费]', '[2X免费]'
                 ]
-                
                 for tag in free_tags:
-                    if tag in html:
-                        return True
-                        
+                    if tag in html: return True
             return False
-            
         except Exception as e:
             logger.error(f"抓取验证失败: {e}")
             return False
@@ -110,10 +91,6 @@ class NativeRssWorker(threading.Thread):
             max_size_gb = float(feed.get('max_size_gb', 0))
             must_contain = feed.get('must_contain', "")
             category = feed.get('category', 'Racing')
-            
-            # === 新配置项 ===
-            # enable_scrape: 是否开启抓取检测 (默认关)
-            # cookie: 站点 Cookie
             enable_scrape = bool(feed.get('enable_scrape', False))
             cookie = feed.get('cookie', "")
             
@@ -121,7 +98,6 @@ class NativeRssWorker(threading.Thread):
                 resp = requests.get(feed_url, timeout=30)
                 if resp.status_code != 200: continue
                 
-                # 处理 XML
                 root = ET.fromstring(resp.content)
                 items = root.findall('./channel/item')
                 
@@ -137,18 +113,13 @@ class NativeRssWorker(threading.Thread):
                     
                     if max_size_gb > 0 and size_gb > max_size_gb: continue
                     
-                    # === 逻辑变更：仅当开启 scrape 时才检查 ===
                     if enable_scrape:
                         if not cookie:
                             logger.warning(f"开启了抓取检测但未提供 Cookie: {feed_url}")
-                            continue # 为了安全，没Cookie就不下
-                            
-                        is_free = self.check_free_via_cookie(link, cookie)
-                        if not is_free:
-                            # logger.info(f"跳过非免费种子: {title}")
+                            continue 
+                        if not self.check_free_via_cookie(link, cookie):
                             continue
                     
-                    #通过检测，添加种子
                     logger.info(f"RSS 添加: {title} [{size_gb:.1f} GB]")
                     self.c.client.torrents_add(urls=link, category=category)
                     self.history.add(link)
@@ -164,7 +135,8 @@ class NativeRssWorker(threading.Thread):
         if total_added > 0:
             self._save_history()
             if hasattr(self.c, 'notifier'):
-                self.c.notifier.flexget_notify(total_added, 0)
+                # === 修改处：调用新的 rss_notify 方法 ===
+                self.c.notifier.rss_notify(total_added, 0)
 
     def run(self):
         logger.info("📡 原生 RSS 模块 (Cookie版) 已就绪")
@@ -178,7 +150,7 @@ class NativeRssWorker(threading.Thread):
                 if not self.c.running: break
                 time.sleep(1)
 
-# === AutoRemoveWorker 保持原样 (温和点杀版) ===
+# === AutoRemoveWorker (保持不变) ===
 class AutoRemoveWorker(threading.Thread):
     def __init__(self, controller):
         super().__init__(name="AutoRemove", daemon=True)
