@@ -2,62 +2,183 @@ import threading
 import time
 import os
 import json
-import subprocess
-import re
-import sys
+import requests
+import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 from .consts import C
-from .utils import logger, fmt_speed, fmt_size, fmt_duration
+from .utils import logger, fmt_size
 
-class FlexGetWorker(threading.Thread):
+class NativeRssWorker(threading.Thread):
     def __init__(self, controller):
-        super().__init__(name="FlexGet", daemon=True)
+        super().__init__(name="NativeRSS", daemon=True)
         self.c = controller
+        self.history = set()
+        self._load_history()
         
-    def execute(self) -> bool:
-        if not os.path.exists(C.FLEXGET_CONFIG): return False
+    def _load_history(self):
+        if os.path.exists(C.RSS_HISTORY):
+            try: 
+                data = json.load(open(C.RSS_HISTORY))
+                self.history = set(data)
+            except: pass
+            
+    def _save_history(self):
         try:
-            if not os.path.exists(C.FLEXGET_LOG):
-                os.makedirs(os.path.dirname(C.FLEXGET_LOG), exist_ok=True)
-                with open(C.FLEXGET_LOG, 'a') as f: f.write("")
+            os.makedirs(os.path.dirname(C.RSS_HISTORY), exist_ok=True)
+            with open(C.RSS_HISTORY, 'w') as f: 
+                json.dump(list(self.history)[-5000:], f)
         except: pass
 
-        py_script = (
-            "import sys; from flexget import main; "
-            "sys.argv=['flexget', '-c', '{}', '--logfile', '{}', 'execute']; main()"
-        ).format(C.FLEXGET_CONFIG, C.FLEXGET_LOG)
+    def parse_size(self, item):
+        enclosure = item.find('enclosure')
+        if enclosure is not None:
+            length = enclosure.get('length')
+            if length and length.isdigit():
+                return int(length)
+        return 0
 
-        cmd = [sys.executable, "-c", py_script]
-        start_ts = time.time()
+    def check_free_via_cookie(self, url, cookie_str):
+        """
+        仅通过 Cookie 抓取页面检测是否免费
+        """
+        if not cookie_str: return False
+        
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            duration = time.time() - start_ts
-            if proc.returncode == 0:
-                accepted = re.findall(r'Accepted:\s+(\d+)', proc.stdout)
-                count = sum(int(x) for x in accepted) if accepted else 0
-                try:
-                    with open(C.FLEXGET_LOG, 'r') as f:
-                        f.seek(0, 2); size = f.tell(); f.seek(max(0, size - 2048), 0); log_content = f.read()
-                    acc_log = re.findall(r'Accepted:\s+(\d+)', log_content)
-                    if acc_log: count = max(count, sum(int(x) for x in acc_log))
-                except: pass
-                if count > 0:
-                    logger.info(f"FlexGet 抓取成功: {count} 个 (耗时 {duration:.1f}s)")
-                    if hasattr(self.c, 'notifier'): self.c.notifier.flexget_notify(count, duration)
-                else: logger.info(f"FlexGet 运行完成 (耗时 {duration:.1f}s)")
-                return True
-            else: logger.error(f"FlexGet 失败: {proc.stderr[:200]}"); return False
-        except Exception as e: logger.error(f"FlexGet 异常: {e}"); return False
+            # 解析 Cookie
+            cookie_dict = {}
+            for c in cookie_str.split(';'):
+                if '=' in c:
+                    k, v = c.split('=', 1)
+                    cookie_dict[k.strip()] = v.strip()
+            
+            # 随机休眠 1~2 秒，模拟真人，防止被站点防火墙判定为 CC 攻击
+            time.sleep(1.5)
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': url
+            }
+            
+            # 发起请求
+            # logger.info(f"🔍 正在抓取页面验证免费: {url}") # 调试时可开启
+            resp = requests.get(url, cookies=cookie_dict, headers=headers, timeout=15)
+            
+            if resp.status_code == 200:
+                html = resp.text
+                # === 核心检测逻辑 ===
+                # 这里包含了绝大多数 NexusPHP 站点的免费特征码
+                # 只要页面里出现任意一个，就判定为免费
+                free_tags = [
+                    'class="pro_free"',       # 标准 NexusPHP 免费
+                    'class="pro_free2up"',    # 2x免费
+                    'alt="Free"',             # 图标 Alt 标签
+                    'alt="2xFree"',
+                    '<font class="free">',    # 旧版架构
+                    '[免费]',                  # 某些站点纯文本
+                    '[2X免费]'
+                ]
+                
+                for tag in free_tags:
+                    if tag in html:
+                        return True
+                        
+            return False
+            
+        except Exception as e:
+            logger.error(f"抓取验证失败: {e}")
+            return False
+
+    def execute(self):
+        if not os.path.exists(C.RSS_RULES): return
+        try: feeds = json.load(open(C.RSS_RULES))
+        except: return
+        if not self.c.client:
+            try: self.c._connect()
+            except: return
+        try:
+            if not os.path.exists(C.RSS_LOG):
+                os.makedirs(os.path.dirname(C.RSS_LOG), exist_ok=True)
+                with open(C.RSS_LOG, 'a') as f: f.write("")
+        except: pass
+
+        total_added = 0
+        
+        for feed in feeds:
+            feed_url = feed.get('url')
+            if not feed_url: continue
+            
+            max_size_gb = float(feed.get('max_size_gb', 0))
+            must_contain = feed.get('must_contain', "")
+            category = feed.get('category', 'Racing')
+            
+            # === 新配置项 ===
+            # enable_scrape: 是否开启抓取检测 (默认关)
+            # cookie: 站点 Cookie
+            enable_scrape = bool(feed.get('enable_scrape', False))
+            cookie = feed.get('cookie', "")
+            
+            try:
+                resp = requests.get(feed_url, timeout=30)
+                if resp.status_code != 200: continue
+                
+                # 处理 XML
+                root = ET.fromstring(resp.content)
+                items = root.findall('./channel/item')
+                
+                for item in items:
+                    title = item.find('title').text
+                    link = item.find('link').text
+                    
+                    if link in self.history: continue
+                    if must_contain and must_contain.lower() not in title.lower(): continue
+                    
+                    size_bytes = self.parse_size(item)
+                    size_gb = size_bytes / (1024**3)
+                    
+                    if max_size_gb > 0 and size_gb > max_size_gb: continue
+                    
+                    # === 逻辑变更：仅当开启 scrape 时才检查 ===
+                    if enable_scrape:
+                        if not cookie:
+                            logger.warning(f"开启了抓取检测但未提供 Cookie: {feed_url}")
+                            continue # 为了安全，没Cookie就不下
+                            
+                        is_free = self.check_free_via_cookie(link, cookie)
+                        if not is_free:
+                            # logger.info(f"跳过非免费种子: {title}")
+                            continue
+                    
+                    #通过检测，添加种子
+                    logger.info(f"RSS 添加: {title} [{size_gb:.1f} GB]")
+                    self.c.client.torrents_add(urls=link, category=category)
+                    self.history.add(link)
+                    total_added += 1
+                    try:
+                        with open(C.RSS_LOG, 'a') as f:
+                            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ADD: {title} | {size_gb:.2f}GB\n")
+                    except: pass
+                    
+            except Exception as e:
+                logger.error(f"RSS 处理错误: {e}")
+
+        if total_added > 0:
+            self._save_history()
+            if hasattr(self.c, 'notifier'):
+                self.c.notifier.flexget_notify(total_added, 0)
 
     def run(self):
+        logger.info("📡 原生 RSS 模块 (Cookie版) 已就绪")
         while self.c.running:
-            if not self.c.config.flexget_enabled: time.sleep(10); continue
+            if not self.c.config.flexget_enabled: 
+                time.sleep(10); continue
             try: self.execute()
-            except Exception as e: logger.error(f"FlexGet 循环异常: {e}")
+            except Exception as e: logger.error(f"RSS 循环异常: {e}")
             interval = max(60, int(self.c.config.flexget_interval_sec))
             for _ in range(interval):
                 if not self.c.running: break
                 time.sleep(1)
 
+# === AutoRemoveWorker 保持原样 (温和点杀版) ===
 class AutoRemoveWorker(threading.Thread):
     def __init__(self, controller):
         super().__init__(name="AutoRemove", daemon=True)
@@ -97,11 +218,7 @@ class AutoRemoveWorker(threading.Thread):
             try: self.c._connect()
             except: return
 
-        # 获取种子列表
         torrents = list(self.c.client.torrents_info())
-        
-        # === 核心优化 1: 按上传速度从慢到快排序 ===
-        # 这样确保如果只能删一个，一定先删最慢的那个，保留速度快的
         torrents.sort(key=lambda x: getattr(x, 'upspeed', 0))
 
         now = time.time()
@@ -113,7 +230,6 @@ class AutoRemoveWorker(threading.Thread):
             thash = t.hash
             save_path = getattr(t, 'save_path', '/')
             free_space = self.get_disk_free(save_path)
-            
             upspeed = getattr(t, 'upspeed', 0)
             dlspeed = getattr(t, 'dlspeed', 0)
             progress = getattr(t, 'progress', 0)
@@ -150,15 +266,11 @@ class AutoRemoveWorker(threading.Thread):
                         if not since: self.state["since"][rule_key] = now
                         elif now - since >= min_time:
                             deletions.append((t, r.get("name", f"Rule #{idx}")))
-                            break # 命中一个规则就退出规则循环
+                            break
                 else:
                     if not dry_run: self.state["since"].pop(rule_key, None)
             
-            # === 核心优化 2: 点杀模式 ===
-            # 如果不是预览模式，且已经找到了 1 个待删除的种子，
-            # 立即停止检查剩余种子。
-            if not dry_run and len(deletions) >= 1:
-                break
+            if not dry_run and len(deletions) >= 1: break
 
         if dry_run:
             print("-" * 60 + f"\n共发现 {len(deletions) if not dry_run else 'N/A'} 个目标")
@@ -188,7 +300,6 @@ class AutoRemoveWorker(threading.Thread):
             if not self.c.config.autoremove_enabled: time.sleep(10); continue
             try: self.execute(dry_run=False)
             except Exception as e: logger.error(f"AutoRemove 循环异常: {e}")
-            # 由于每次只删一个，建议缩短检查间隔，防止删得太慢赶不上下载
             interval = max(30, int(self.c.config.autoremove_interval_sec))
             for _ in range(interval):
                 if not self.c.running: break
