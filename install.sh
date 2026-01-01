@@ -1,12 +1,11 @@
 #!/bin/bash
 #
-# qBit Smart Limit 管理脚本 v11.2.0 ULTIMATE
-# 包含：全交互安装向导 | 自动修复服务 | 完整依赖管理 | 美化菜单
+# qBit Smart Limit 管理脚本 v11.2.1 PRO (FlexGet Fix)
+# 修复 command not found | 增强依赖管理 | 全交互向导
 #
 
 # =========================================================
 # ⚠️ 请修改此处为你的 GitHub 仓库地址 (RAW 链接)
-# 必须指向 raw.githubusercontent.com
 GITHUB_RAW="https://raw.githubusercontent.com/1336665/qbit_smart_limit/main"
 # =========================================================
 
@@ -119,7 +118,7 @@ download() {
     
     if [[ "$http_code" == "200" && -s "$tmp" ]]; then
         mv "$tmp" "$dest"
-        [[ "$dest" == *.sh || "$dest" == *.py ]] && chmod +x "$dest"
+        [[ "$dest" == *.sh || "$dest" == *.py || "$dest" == *"/bin/qsl" ]] && chmod +x "$dest"
         echo -e "\r  ${G}✓${N} 下载 ${name}              "
         return 0
     fi
@@ -132,7 +131,7 @@ download() {
 # 2. 核心功能：安装与配置
 # ════════════════════════════════════════════════════════════
 
-# 交互式配置输入 (恢复这个功能)
+# 交互式配置输入
 get_input() {
     echo ""
     echo -e "  ${C}━━━━━━━━━━━━━━ qBittorrent 设置 ━━━━━━━━━━━━━━━${N}"
@@ -228,7 +227,7 @@ EOFCFG
     return 0
 }
 
-# 创建 Systemd 服务文件 (修复 Update 报错的核心)
+# 创建 Systemd 服务文件
 create_service_file() {
     cat > "$SERVICE_FILE" << EOFSVC
 [Unit]
@@ -276,6 +275,11 @@ install_deps() {
     if ! python3 -c "import qbittorrentapi" &>/dev/null; then
         pip3 install --break-system-packages -q qbittorrent-api flexget 2>/dev/null || pip3 install -q qbittorrent-api flexget 2>/dev/null || true
     fi
+    # 强制检查 FlexGet
+    if ! command -v flexget &>/dev/null; then
+        warn "FlexGet 未找到，尝试强制安装..."
+        pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget 2>/dev/null || true
+    fi
     ok "Python 依赖"
     return 0
 }
@@ -293,7 +297,7 @@ show_banner() {
     echo -e "${C}  ┃${N}  ${G}██ ▄▄ ██ ${W}██   ██ ${C}██${N}    ██           ${G}██${N} ${W}██${N}          ${C}┃${N}"
     echo -e "${C}  ┃${N}  ${G} ██████  ${W}██████  ${C}██${N}    ██      ${G}███████${N} ${W}███████${N}     ${C}┃${N}"
     echo -e "${C}  ┃${N}  ${G}    ▀▀${N}                                              ${C}┃${N}"
-    echo -e "${C}  ┃${N}         ${Y}qBit Smart Limit v${SCRIPT_VER:-11.2.0} PRO${N}            ${C}┃${N}"
+    echo -e "${C}  ┃${N}         ${Y}qBit Smart Limit v${SCRIPT_VER:-11.2.1} PRO${N}            ${C}┃${N}"
     echo -e "${C}  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${N}"
     echo ""
 }
@@ -344,8 +348,15 @@ show_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. FlexGet 逻辑
+# 4. FlexGet 逻辑 (修复命令路径)
 # ════════════════════════════════════════════════════════════
+get_flexget_cmd() {
+    if command -v flexget &>/dev/null; then echo "flexget"
+    elif [[ -f "/usr/local/bin/flexget" ]]; then echo "/usr/local/bin/flexget"
+    elif [[ -f "/usr/bin/flexget" ]]; then echo "/usr/bin/flexget"
+    else echo ""; fi
+}
+
 flexget_regen_config() {
     ensure_dirs
     python3 - <<'PY' >/dev/null 2>&1
@@ -410,6 +421,28 @@ flexget_del_sub() {
     else rm -f "$tmp"; err "删除失败"; fi
 }
 
+# 修复：手动运行 FlexGet
+flexget_run_now() {
+    echo ""; info "准备运行 FlexGet CLI..."
+    
+    # 自动修复缺失的命令
+    local cmd=$(get_flexget_cmd)
+    if [[ -z "$cmd" ]]; then
+        warn "FlexGet 命令未找到，尝试自动修复..."
+        pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget 2>/dev/null
+        cmd=$(get_flexget_cmd)
+    fi
+    
+    if [[ -n "$cmd" ]]; then
+        info "执行: $cmd -c $FLEXGET_CFG execute"
+        $cmd -c "$FLEXGET_CFG" execute
+        echo ""
+    else
+        err "FlexGet 仍未找到，请手动运行: pip3 install flexget"
+    fi
+    read -rp "按回车继续..."
+}
+
 flexget_quick_setup() {
     echo ""; echo -e "  ${W}>>> FlexGet 一键配置向导 <<<${N}"; echo ""
     read -rp "  1. 启用 FlexGet 自动抓种? [Y/n]: " c
@@ -442,7 +475,7 @@ flexget_menu() {
             4) flexget_del_sub ;;
             5) flexget_list_subs; read -rp "按回车继续..." ;;
             6) read -rp "  新间隔(秒): " v; [[ "$v" =~ ^[0-9]+$ ]] && set_kv "flexget_interval_sec" "$v" && systemctl restart qbit-smart-limit && ok "已更新" ;;
-            7) echo "运行 FlexGet CLI..."; flexget -c "$FLEXGET_CFG" execute; read -rp "按回车继续..." ;;
+            7) flexget_run_now ;;
             8) tail -n 20 "$FLEXGET_LOG"; read -rp "按回车继续..." ;;
             0) return ;;
         esac
@@ -564,15 +597,13 @@ autorm_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 6. 安装与更新逻辑 (核心修复)
+# 6. 安装与更新逻辑
 # ════════════════════════════════════════════════════════════
 do_install() {
     show_banner
     echo -e "  ${W}>>> 安装 qBit Smart Limit PRO <<<${N}"; echo ""
     install_deps || return 1
     mkdir -p "$INSTALL_DIR"
-    
-    # 核心安装逻辑
     download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py" || return 1
     install_source_files || return 1
     
@@ -580,14 +611,11 @@ do_install() {
     echo ""
     if ! save_config; then err "保存配置失败"; return 1; fi
     
-    # 创建服务并启动
     create_service_file
     systemctl start qbit-smart-limit && ok "服务已启动"
     
-    # 更新本地脚本并增加权限
     download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本" || true
     chmod +x "$SCRIPT_PATH"
-    
     echo ""; echo -e "  ${G}安装完成! 运行 qsl 打开菜单${N}"
 }
 
@@ -599,21 +627,20 @@ do_update() {
     
     read -rp "  确认更新? [y/N]: " c
     if [[ "$c" =~ ^[Yy] ]]; then
-        # 1. 下载新代码
         download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
         install_source_files
         
-        # 2. 更新管理脚本并赋予权限
+        # 修复：更新管理脚本并赋予权限
         download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
         chmod +x "$SCRIPT_PATH"
         
-        # 3. 智能修复服务文件 (解决 Unit not found)
+        # 修复：如果服务文件不存在，自动创建
         if [[ ! -f "$SERVICE_FILE" ]]; then
             warn "服务文件缺失，正在重建..."
             create_service_file
         fi
         
-        # 4. 重启
+        systemctl daemon-reload
         if systemctl restart qbit-smart-limit; then
             ok "更新完成，服务已重启"
         else
@@ -636,9 +663,6 @@ do_uninstall() {
     ok "卸载完成"
 }
 
-# ════════════════════════════════════════════════════════════
-# 主入口
-# ════════════════════════════════════════════════════════════
 main() {
     if [[ $EUID -ne 0 ]]; then echo -e "${R}请使用 root 运行${N}"; exit 1; fi
     ensure_dirs
