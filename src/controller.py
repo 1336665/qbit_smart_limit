@@ -1,6 +1,6 @@
 import os, sys, time, signal, threading, queue, logging
 from collections import deque
-from typing import Optional, Dict, List, Any, Tuple  # <--- 这里添加了 Tuple
+from typing import Optional, Dict, List, Any, Tuple
 
 import qbittorrentapi
 from qbittorrentapi.exceptions import APIConnectionError, LoginFailed
@@ -14,6 +14,8 @@ from .algorithms import _precision_tracker
 from .helper_bot import TelegramBot
 from .helper_web import U2WebHelper, BS4_AVAILABLE
 from .logic import DownloadLimiter, ReannounceOptimizer
+# 新增引入
+from .workers import FlexGetWorker, AutoRemoveWorker
 
 class Controller:
     ACTIVE = frozenset({'downloading', 'seeding', 'uploading', 'forcedUP', 'stalledUP', 
@@ -57,6 +59,12 @@ class Controller:
         self.modified_up: set = set()
         self.modified_dl: set = set()
         self._api_times: deque = deque(maxlen=200)
+        
+        # 启动后台 Worker
+        self.flexget_worker = FlexGetWorker(self)
+        self.autoremove_worker = AutoRemoveWorker(self)
+        self.flexget_worker.start()
+        self.autoremove_worker.start()
         
         self._pending_tid_searches: queue.Queue = queue.Queue()
         threading.Thread(target=self._tid_search_worker, daemon=True, name="TID-Search").start()
