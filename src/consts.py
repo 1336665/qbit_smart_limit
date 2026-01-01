@@ -1,7 +1,7 @@
 import os
 
 class C:
-    VERSION = "11.1.0 PRO"
+    VERSION = "11.3.4 PRO"
     
     PHASE_WARMUP = "warmup"
     PHASE_CATCH = "catch"
@@ -64,24 +64,23 @@ class C:
     PEER_LIST_CHECK_INTERVAL = 300
     TID_SEARCH_INTERVAL = 60
     
-    # 数据库相关
     DB_PATH = "qbit_smart_limit.db"
     DB_SAVE_INTERVAL = 180
     
-    # TG Bot 轮询
     TG_POLL_INTERVAL = 2
     COOKIE_CHECK_INTERVAL = 3600
 
-    # === 新增路径配置 ===
-    # 自动获取项目根目录 (src 的上一级)
+    # === 路径配置 (修复报错的核心部分) ===
+    # 获取 src 的上一级目录作为项目根目录
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    # FlexGet 路径
+    # FlexGet
     FLEXGET_DIR = os.path.join(BASE_DIR, "flexget")
     FLEXGET_CONFIG = os.path.join(FLEXGET_DIR, "config.yml")
-    FLEXGET_LOG = "/var/log/qsl-flexget.log"
+    FLEXGET_LOG = "/var/log/qsl-flexget.log"  # 之前缺了这个导致 main.py 报错
     
-    # AutoRemove 路径
+    # AutoRemove
     AUTORM_DIR = os.path.join(BASE_DIR, "autoremove")
     AUTORM_RULES = os.path.join(AUTORM_DIR, "rules.json")
     AUTORM_STATE = os.path.join(AUTORM_DIR, "state.json")
+    AUTORM_LOG = "/var/log/qsl-autoremove.log" # 之前缺了这个
