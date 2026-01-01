@@ -1,6 +1,6 @@
 import os, sys, time, signal, threading, queue, logging
 from collections import deque
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple  # <--- 这里添加了 Tuple
 
 import qbittorrentapi
 from qbittorrentapi.exceptions import APIConnectionError, LoginFailed
