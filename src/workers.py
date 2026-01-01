@@ -5,9 +5,8 @@ import json
 import subprocess
 import re
 import sys
-import html
 from .consts import C
-from .utils import logger, fmt_speed, fmt_size, fmt_duration, safe_div
+from .utils import logger, fmt_speed, fmt_size, fmt_duration
 
 class FlexGetWorker(threading.Thread):
     def __init__(self, controller):
@@ -15,23 +14,18 @@ class FlexGetWorker(threading.Thread):
         self.c = controller
         
     def execute(self) -> bool:
-        """执行一次 FlexGet 任务"""
-        # 1. 检查配置
+        """执行 FlexGet"""
         if not os.path.exists(C.FLEXGET_CONFIG):
             logger.warning(f"FlexGet 配置文件未找到: {C.FLEXGET_CONFIG}")
             return False
 
-        # 2. 确保日志文件存在
         try:
             if not os.path.exists(C.FLEXGET_LOG):
                 os.makedirs(os.path.dirname(C.FLEXGET_LOG), exist_ok=True)
                 with open(C.FLEXGET_LOG, 'a') as f: f.write("")
         except: pass
 
-        # 3. 构造命令 (关键修复)
-        # 不使用 -m flexget，而是构建一个内联 Python 脚本来调用 flexget.main()
-        # 这样可以 100% 确保调用的是当前 Python 环境中的 flexget
-        
+        # 使用内联 Python 调用，确保环境一致
         py_script = (
             "import sys; "
             "from flexget import main; "
@@ -43,46 +37,31 @@ class FlexGetWorker(threading.Thread):
         
         start_ts = time.time()
         try:
-            # 运行命令
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             duration = time.time() - start_ts
             
-            # FlexGet 成功时通常返回 0
             if proc.returncode == 0:
-                # 解析标准输出寻找 "Accepted: N"
-                # 注意：如果使用了 --logfile，大部分输出会在日志里，stdout 可能只有少量信息
-                # 但为了通知，我们尝试读一下
                 accepted = re.findall(r'Accepted:\s+(\d+)', proc.stdout)
                 count = sum(int(x) for x in accepted) if accepted else 0
                 
-                # 另外检查日志文件的最后几行来确认结果 (因为 stdout 可能被重定向了)
-                log_content = ""
+                # 补充检查日志末尾
                 try:
                     with open(C.FLEXGET_LOG, 'r') as f:
-                        # 读取最后 2KB
-                        f.seek(0, 2)
-                        size = f.tell()
-                        f.seek(max(0, size - 2048), 0)
+                        f.seek(0, 2); size = f.tell(); f.seek(max(0, size - 2048), 0)
                         log_content = f.read()
-                        
                     acc_log = re.findall(r'Accepted:\s+(\d+)', log_content)
-                    if acc_log:
-                        count = max(count, sum(int(x) for x in acc_log))
+                    if acc_log: count = max(count, sum(int(x) for x in acc_log))
                 except: pass
 
                 if count > 0:
                     logger.info(f"FlexGet 抓取成功: {count} 个 (耗时 {duration:.1f}s)")
-                    if hasattr(self.c, 'notifier'):
-                        self.c.notifier.flexget_notify(count, duration)
+                    if hasattr(self.c, 'notifier'): self.c.notifier.flexget_notify(count, duration)
                 else:
                     logger.info(f"FlexGet 运行完成 (耗时 {duration:.1f}s)")
                 return True
             else:
-                # 运行失败，记录 stderr
-                err_msg = proc.stderr.strip() or proc.stdout.strip() or "未知错误"
-                logger.error(f"FlexGet 运行失败 (Code {proc.returncode}): {err_msg[:200]}")
+                logger.error(f"FlexGet 运行失败: {proc.stderr[:200]}")
                 return False
-                
         except Exception as e:
             logger.error(f"FlexGet 执行异常: {e}")
             return False
@@ -92,13 +71,8 @@ class FlexGetWorker(threading.Thread):
         while self.c.running:
             if not self.c.config.flexget_enabled:
                 time.sleep(10); continue
-            
-            try:
-                self.execute()
-            except Exception as e:
-                logger.error(f"FlexGet 循环异常: {e}")
-            
-            # 等待间隔
+            try: self.execute()
+            except Exception as e: logger.error(f"FlexGet 循环异常: {e}")
             interval = max(60, int(self.c.config.flexget_interval_sec))
             for _ in range(interval):
                 if not self.c.running: break
@@ -123,17 +97,29 @@ class AutoRemoveWorker(threading.Thread):
         except: pass
 
     def get_disk_free(self, path):
+        """
+        获取磁盘剩余空间 (智能回退版)
+        1. 尝试获取 qB 报告路径的空间
+        2. 如果失败 (Snap/Docker 隔离)，自动回退监控根目录 /
+        """
         try:
             st = os.statvfs(path)
             return st.f_bavail * st.f_frsize
-        except: return 0
+        except:
+            # === 关键修复：路径不存在时，尝试监控根目录 ===
+            try:
+                # 这里你可以修改为你真正想监控的挂载点，比如 "/home" 或 "/mnt/data"
+                # 默认为 "/" (系统根目录)，通常能反映整体磁盘情况
+                fallback_path = "/" 
+                st = os.statvfs(fallback_path)
+                # 仅在调试时打印，避免刷屏
+                # print(f"DEBUG: 路径 [{path}] 不存在，已回退监控 [{fallback_path}]") 
+                return st.f_bavail * st.f_frsize
+            except:
+                return 0 # 彻底失败才返回 0
 
     def execute(self, dry_run=False):
-        """执行一次 AutoRemove 检查"""
-        if not os.path.exists(C.AUTORM_RULES):
-            if not dry_run: logger.warning("AutoRemove 规则文件不存在")
-            return
-
+        if not os.path.exists(C.AUTORM_RULES): return
         try:
             if not os.path.exists(C.AUTORM_LOG) and not dry_run:
                 os.makedirs(os.path.dirname(C.AUTORM_LOG), exist_ok=True)
@@ -142,8 +128,8 @@ class AutoRemoveWorker(threading.Thread):
 
         try: rules = json.load(open(C.AUTORM_RULES))
         except: return
-
         if not rules: return
+        
         if not self.c.client: 
             try: self.c._connect()
             except: return
@@ -152,15 +138,15 @@ class AutoRemoveWorker(threading.Thread):
         now = time.time()
         deletions = []
 
-        if dry_run: 
-            print(f"\n{'[状态]':<10} {'[规则]':<20} {'[种子名称]'}\n" + "-"*60)
+        if dry_run: print(f"\n{'[状态]':<10} {'[规则]':<20} {'[种子名称]'}\n" + "-"*60)
 
         for t in torrents:
             thash = t.hash
             save_path = getattr(t, 'save_path', '/')
+            
+            # 这里调用了新的智能检测函数
             free_space = self.get_disk_free(save_path)
             
-            # 获取种子属性
             upspeed = getattr(t, 'upspeed', 0)
             progress = getattr(t, 'progress', 0)
             
@@ -172,29 +158,25 @@ class AutoRemoveWorker(threading.Thread):
                 
                 rule_key = f"{thash}:{idx}"
                 
-                # 1. 空间检查 (如果空间足够，直接跳过此规则)
+                # 如果检测到的空间 (可能是根目录的空间) 足够，就跳过
                 if min_free > 0 and free_space >= min_free:
                     if not dry_run: self.state["since"].pop(rule_key, None)
                     continue
                 
-                # 2. 完成度检查
                 if req_comp and progress < 0.999:
                     if not dry_run: self.state["since"].pop(rule_key, None)
                     continue
 
-                # 3. 速度检查
                 if upspeed <= max_up:
                     if dry_run:
                         print(f"{'PREVIEW':<10} {r.get('name')[:20]:<20} {t.name[:40]}")
-                        break # 预览模式下，只要匹配一条规则就显示并跳过该种子
+                        break
                     else:
                         since = self.state["since"].get(rule_key)
-                        if not since:
-                            self.state["since"][rule_key] = now
+                        if not since: self.state["since"][rule_key] = now
                         elif now - since >= min_time:
                             deletions.append((t, r.get("name", f"Rule #{idx}")))
-                            # 匹配到删除就不再匹配其他规则
-                            break 
+                            break
                 else:
                     if not dry_run: self.state["since"].pop(rule_key, None)
 
@@ -214,25 +196,16 @@ class AutoRemoveWorker(threading.Thread):
                 'ratio': getattr(t, 'ratio', 0),
                 'seed_time': now - getattr(t, 'added_on', now)
             }
-            
             logger.warning(f"AutoRemove 删除: {t.name} ({reason})")
-            
-            # 写独立日志
             try:
                 with open(C.AUTORM_LOG, "a") as lf:
-                    lf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] DELETE: {t.name} | Reason: {reason} | Free: {fmt_size(free_space)}\n")
+                    lf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] DELETE: {t.name} | {reason} | FreeSpace: {fmt_size(free_space)}\n")
             except: pass
 
             try:
                 if hasattr(self.c, 'notifier'): self.c.notifier.autoremove_notify(info)
-                # 物理删除
                 self.c.client.torrents_delete(delete_files=True, torrent_hashes=t.hash)
                 self.c.db.delete_torrent_state(t.hash)
-                
-                # 清理计时器
-                keys_to_remove = [k for k in self.state["since"] if k.startswith(t.hash)]
-                for k in keys_to_remove: self.state["since"].pop(k, None)
-                
                 deleted_hashes.add(t.hash)
             except Exception as e:
                 logger.error(f"删除失败: {e}")
@@ -244,12 +217,8 @@ class AutoRemoveWorker(threading.Thread):
         while self.c.running:
             if not self.c.config.autoremove_enabled:
                 time.sleep(10); continue
-            
-            try:
-                self.execute(dry_run=False)
-            except Exception as e:
-                logger.error(f"AutoRemove 循环异常: {e}")
-            
+            try: self.execute(dry_run=False)
+            except Exception as e: logger.error(f"AutoRemove 循环异常: {e}")
             interval = max(60, int(self.c.config.autoremove_interval_sec))
             for _ in range(interval):
                 if not self.c.running: break
