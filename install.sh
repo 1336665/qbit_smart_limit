@@ -1,227 +1,370 @@
-#!/usr/bin/env python3
-import argparse
-import os
-import sys
-import json
-import time
-from src.controller import Controller
-from src.consts import C
+#!/bin/bash
+#
+# qBit Smart Limit Installer
+# GitHub: https://github.com//YOUR_REPO
+#
 
-# ===========================
-# 🎨 UI 美化与工具函数
-# ===========================
+# =========================================================
+# ⚠️ [发布前修改] 请将此处修改为你 GitHub 仓库的 RAW 地址
+GITHUB_RAW="https://raw.githubusercontent.com/1336665/qbit_smart_limit/main"
+# =========================================================
 
-class Col:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+# 环境变量设置
+export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$HOME/.local/bin
 
-def clear_scr():
-    os.system('cls' if os.name == 'nt' else 'clear')
+# 路径常量
+INSTALL_DIR="/opt/qbit-smart-limit"
+CONFIG_FILE="${INSTALL_DIR}/config.json"
+SERVICE_FILE="/etc/systemd/system/qbit-smart-limit.service"
+SCRIPT_PATH="/usr/local/bin/qsl"
+MAIN_PY="${INSTALL_DIR}/main.py"
 
-def print_banner():
-    clear_scr()
-    print(f"{Col.CYAN}{Col.BOLD}")
-    print(r"""
-   ___  ____  _ _      _____                      _
-  / _ \| __ )(_) |_   / _  /_ __ ___   __ _ _ __ | |_
- | | | |  _ \| | __|  \// /| '_ ` _ \ / _` | '__|| __|
- | |_| | |_) | | |_    / //\| | | | | | (_| | |  | |_
-  \__\_\____/|_|\__|  /____/|_| |_| |_|\__,_|_|   \__|
-    """)
-    print(f"      {Col.HEADER}🚀 qBit Smart Limit {C.VERSION}{Col.ENDC}")
-    print(f"{Col.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Col.ENDC}")
+# 模块数据路径
+RSS_DIR="${INSTALL_DIR}/rss_data"
+RSS_RULES="${RSS_DIR}/feeds.json"
+RSS_LOG="/var/log/qsl-rss.log"
+AUTORM_DIR="${INSTALL_DIR}/autoremove"
+AUTORM_RULES="${AUTORM_DIR}/rules.json"
+AUTORM_LOG="/var/log/qsl-autoremove.log"
 
-def input_clean(prompt, default=None):
-    d_str = f" [{default}]" if default else ""
-    val = input(f"{Col.GREEN}?{Col.ENDC} {prompt}{d_str}: ").strip()
-    return val if val else default
+# UI 颜色
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; W='\033[1;37m'; D='\033[0;90m'; N='\033[0m'
+# 样式
+BOLD='\033[1m'
 
-def input_bool(prompt, default=False):
-    d_str = "Y/n" if default else "y/N"
-    val = input(f"{Col.GREEN}?{Col.ENDC} {prompt} [{d_str}]: ").strip().lower()
-    if not val: return default
-    return val in ['y', 'yes', '1', 'true']
+# ────────────────────────────────────────────────────────────
+# 基础工具函数
+# ────────────────────────────────────────────────────────────
 
-def save_json(path, data):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"{Col.GREEN}✅ 配置已保存!{Col.ENDC}")
-    except Exception as e:
-        print(f"{Col.FAIL}❌ 保存失败: {e}{Col.ENDC}")
+# 只有在非交互模式(curl | bash)下才执行自下载
+if [[ ! -t 0 ]]; then
+    echo -e "\n  ${C}🚀 正在拉取安装脚本...${N}"
+    if command -v curl >/dev/null; then 
+        curl -sL "${GITHUB_RAW}/install.sh" -o "$SCRIPT_PATH"
+    else 
+        wget -qO "$SCRIPT_PATH" "${GITHUB_RAW}/install.sh"
+    fi
+    chmod +x "$SCRIPT_PATH"
+    echo -e "  ${G}✓${N} 脚本就绪，正在启动管理界面..."; echo ""
+    exec "$SCRIPT_PATH"
+    exit 0
+fi
 
-def ensure_logs():
-    for log_file in [C.RSS_LOG, C.AUTORM_LOG]:
-        try:
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            if not os.path.exists(log_file): open(log_file, 'a').close()
-            os.chmod(log_file, 0o666)
-        except: pass
+ok()   { echo -e "  ${G}✓${N} $1"; }
+err()  { echo -e "  ${R}✗${N} $1"; }
+warn() { echo -e "  ${Y}!${N} $1"; }
+info() { echo -e "  ${C}i${N} $1"; }
 
-# ===========================
-# 🧙‍♂️ 交互式向导功能
-# ===========================
+# JSON 转义辅助函数
+json_escape() {
+    echo -n "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()).strip("\""))' 2>/dev/null || echo "$1"
+}
 
-def wizard_add_rss():
-    print(f"\n{Col.BOLD}📡 添加 RSS 订阅源{Col.ENDC}")
-    print(f"{Col.CYAN}------------------{Col.ENDC}")
+ensure_env() {
+    mkdir -p "$RSS_DIR" "$AUTORM_DIR" "${INSTALL_DIR}/src" "/var/log" >/dev/null 2>&1
+    if [[ ! -f "$RSS_RULES" ]]; then echo '[]' > "$RSS_RULES"; fi
+    if [[ ! -f "$AUTORM_RULES" ]]; then echo '[]' > "$AUTORM_RULES"; fi
+    touch "$RSS_LOG" "$AUTORM_LOG"
+    chmod 666 "$RSS_LOG" "$AUTORM_LOG" 2>/dev/null || true
+}
+
+get_bool() { jq -r ".$1 // false" "$CONFIG_FILE" 2>/dev/null; }
+set_kv() {
+    local k="$1" v="$2"; tmp=$(mktemp)
+    if [[ "$v" == "true" || "$v" == "false" ]]; then 
+        jq ".$k = $v" "$CONFIG_FILE" > "$tmp"
+    elif [[ "$v" =~ ^[0-9]+$ ]]; then 
+        jq ".$k = ($v|tonumber)" "$CONFIG_FILE" > "$tmp"
+    else 
+        jq --arg val "$v" ".$k = \$val" "$CONFIG_FILE" > "$tmp"
+    fi
+    mv "$tmp" "$CONFIG_FILE" && chmod 600 "$CONFIG_FILE"
+}
+
+get_remote_ver() { curl -sL --connect-timeout 5 "${GITHUB_RAW}/src/consts.py" 2>/dev/null | grep -oP 'VERSION = "\K[^"]+' | head -1; }
+get_local_ver() { [[ -f "${INSTALL_DIR}/src/consts.py" ]] && grep -oP 'VERSION = "\K[^"]+' "${INSTALL_DIR}/src/consts.py" 2>/dev/null | head -1 || echo "-"; }
+
+download() {
+    local url="$1" dest="$2" name="$3" tmp="/tmp/qsl_dl_$$.tmp"
+    echo -ne "  ${C}↓${N} 下载 ${name}..."
+    local http_code
+    if command -v curl >/dev/null; then 
+        http_code=$(curl -sL --connect-timeout 15 -w "%{http_code}" "$url" -o "$tmp" 2>/dev/null)
+    else 
+        wget -qO "$tmp" "$url" && http_code="200" || http_code="000"
+    fi
+    if [[ "$http_code" == "200" && -s "$tmp" ]]; then 
+        mv "$tmp" "$dest"
+        [[ "$dest" == *.sh || "$dest" == *.py ]] && chmod +x "$dest"
+        echo -e "\r  ${G}✓${N} 下载 ${name}              "
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    echo -e "\r  ${R}✗${N} 下载 ${name} (HTTP $http_code)   "
+    return 1
+}
+
+# ────────────────────────────────────────────────────────────
+# 界面与菜单
+# ────────────────────────────────────────────────────────────
+show_banner() {
+    clear
+    echo -e "${C}  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${N}"
+    echo -e "${C}  ┃${N}         ${BOLD}${Y}qBit Smart Limit Control Panel${N}               ${C}┃${N}"
+    echo -e "${C}  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${N}"
+    echo ""
+}
+
+show_status() {
+    if systemctl is-active --quiet qbit-smart-limit; then serv_st="${G}🟢 运行中${N}"; else serv_st="${R}🔴 已停止${N}"; fi
     
-    feeds = []
-    if os.path.exists(C.RSS_RULES):
-        try: feeds = json.load(open(C.RSS_RULES))
-        except: pass
-
-    # 1. 基础信息
-    url = input_clean("RSS 订阅链接 (URL)")
-    if not url: return
+    if [[ -f "$CONFIG_FILE" ]]; then
+        [[ $(get_bool "flexget_enabled") == "true" ]] && rss_st="${G}🟢 启用${N}" || rss_st="${D}⚪ 禁用${N}"
+        [[ $(get_bool "autoremove_enabled") == "true" ]] && ar_st="${G}🟢 启用${N}" || ar_st="${D}⚪ 禁用${N}"
+    else 
+        rss_st="${D}?${N}"; ar_st="${D}?${N}"
+    fi
     
-    category = input_clean("保存分类 (Category)", "Racing")
+    echo -e "  ${D}┌────────────────────────────────────────────────────────────────┐${N}"
+    echo -e "  ${D}│${N}  服务状态: $serv_st        Native RSS: $rss_st              ${D}│${N}"
+    echo -e "  ${D}│${N}  AutoRemove: $ar_st        配置: ${G}config.json${N}                  ${D}│${N}"
+    echo -e "  ${D}└────────────────────────────────────────────────────────────────┘${N}"; echo ""
+}
+
+show_menu() {
+    echo -e "  ${BOLD}${C}━━ 主菜单 ━━${N}"
+    echo -e "  ${G} 1${N}. 全新安装              ${G} 2${N}. 修改主配置"
+    echo -e "  ${G} 3${N}. 启动/重启服务         ${G} 4${N}. 停止服务"
+    echo -e "  ${G} 5${N}. 查看运行日志          ${G} 6${N}. 检查更新"
+    echo ""
+    echo -e "  ${BOLD}${C}━━ 自动化模块 ━━${N}"
+    echo -e "  ${Y}10${N}. 原生 RSS 订阅管理      ${Y}11${N}. AutoRemove 删种管理"
+    echo ""
+    echo -e "  ${BOLD}${C}━━ 其他 ━━${N}"
+    echo -e "  ${R}99${N}. 卸载程序              ${D} 0${N}. 退出"; echo ""
+}
+
+# ────────────────────────────────────────────────────────────
+# RSS 管理 (带首尾块功能)
+# ────────────────────────────────────────────────────────────
+rss_list() {
+    echo ""; echo -e "  ${BOLD}当前订阅列表:${N}"
+    if [[ ! -s "$RSS_RULES" || "$(cat "$RSS_RULES")" == "[]" ]]; then
+        echo -e "  ${D}(暂无订阅)${N}"
+    else
+        # 优化列表显示，包含首尾块状态
+        jq -r 'to_entries[] | "  \(.key+1). [\(.value.category)] Size<\(.value.max_size_gb)G | Scrape:\(.value.enable_scrape) | ⚡Prio:\(.value.first_last_piece//false) | \(.value.url | split("?")[0])..."' "$RSS_RULES"
+    fi
+    echo ""
+}
+
+rss_add() {
+    echo ""; echo -e "  ${C}>>> 添加 RSS 订阅 <<<${N}"
+    read -rp "  1. RSS 链接: " url
+    [[ -z "$url" ]] && return
     
-    # 2. 高级过滤
-    print(f"\n{Col.BOLD}🔍 过滤规则{Col.ENDC}")
-    must_contain = input_clean("必须包含的关键词 (留空不限制)")
-    max_size = input_clean("最大体积限制 (GB, 0为不限)", "0")
+    read -rp "  2. 种子分类 (默认 Racing): " cat; cat=${cat:-Racing}
+    read -rp "  3. 最大体积 (GB) [30]: " size; size=${size:-30}
+    read -rp "  4. 开启免费检测(需Cookie)? [y/N]: " scrape
     
-    # 3. Cookie 增强
-    print(f"\n{Col.BOLD}🍪 站点增强{Col.ENDC}")
-    enable_scrape = input_bool("开启免费/优惠检测 (Scrape)?")
-    cookie = ""
-    if enable_scrape:
-        cookie = input_clean("输入网站 Cookie (key=value)")
-        
-    # 4. 下载策略 (新增功能)
-    print(f"\n{Col.BOLD}⚡ 下载策略{Col.ENDC}")
-    prio_first_last = input_bool("是否优先下载首尾文件块? (推荐开启)", False)
-
-    new_feed = {
-        "url": url,
-        "category": category,
-        "must_contain": must_contain,
-        "max_size_gb": float(max_size),
-        "enable_scrape": enable_scrape,
-        "cookie": cookie,
-        "first_last_piece": prio_first_last  # <--- 新增字段
-    }
+    local enable_scrape="false"
+    local cookie=""
+    if [[ "$scrape" =~ ^[Yy] ]]; then
+        enable_scrape="true"
+        echo -e "  ${Y}请输入站点 Cookie (格式: nexusphp_u2=...):${N}"
+        read -rp "  > " cookie
+    fi
     
-    feeds.append(new_feed)
-    save_json(C.RSS_RULES, feeds)
-    input(f"\n按 {Col.BOLD}Enter{Col.ENDC} 键返回主菜单...")
-
-def wizard_manage_autoremove():
-    print(f"\n{Col.BOLD}🗑️ 自动删种规则管理{Col.ENDC}")
-    print(f"{Col.CYAN}---------------------{Col.ENDC}")
+    # === 新增功能：首尾块优先 ===
+    read -rp "  5. 优先下载首尾文件块? [y/N]: " prio
+    local first_last="false"
+    if [[ "$prio" =~ ^[Yy] ]]; then first_last="true"; fi
     
-    rules = []
-    if os.path.exists(C.AUTORM_RULES):
-        try: rules = json.load(open(C.AUTORM_RULES))
-        except: pass
-        
-    print(f"当前已有 {len(rules)} 条规则。\n")
-    print("1. 添加新规则")
-    print("2. 清空所有规则")
-    print("0. 返回")
+    tmp=$(mktemp)
+    jq --arg url "$url" \
+       --arg cat "$cat" \
+       --arg size "$size" \
+       --arg scrape "$enable_scrape" \
+       --arg cookie "$cookie" \
+       --arg first_last "$first_last" \
+       '. += [{"url":$url, "category":$cat, "max_size_gb":($size|tonumber), "enable_scrape":($scrape=="true"), "cookie":$cookie, "first_last_piece":($first_last=="true")}]' \
+       "$RSS_RULES" > "$tmp" && mv "$tmp" "$RSS_RULES"
+       
+    ok "订阅已添加"
+}
+
+rss_del() {
+    rss_list
+    read -rp "  请输入要删除的序号: " n
+    if [[ "$n" =~ ^[0-9]+$ ]]; then
+        tmp=$(mktemp)
+        jq "del(.[$((n-1))])" "$RSS_RULES" > "$tmp" && mv "$tmp" "$RSS_RULES"
+        ok "订阅已删除"
+    else
+        err "无效序号"
+    fi
+}
+
+rss_menu() {
+    ensure_env
+    while true; do
+        show_banner; show_status
+        echo -e "  ${C}━━━━━━━━━━━━━━━ 原生 RSS 菜单 ━━━━━━━━━━━━━━━${N}"
+        echo -e "     ${G}1${N}. 添加订阅 (向导)       ${G}2${N}. 删除订阅"
+        echo -e "     ${G}3${N}. 查看订阅列表          ${G}4${N}. 手动编辑配置文件"
+        echo -e "     ${G}5${N}. 开关 RSS 模块         ${G}6${N}. 修改抓取间隔"
+        echo -e "     ${G}7${N}. 查看 RSS 日志         ${D}0${N}. 返回"
+        echo ""; read -rp "  选择: " c
+        case "$c" in
+            1) rss_add ;;
+            2) rss_del ;;
+            3) rss_list; read -rp "..." ;;
+            4) if command -v nano >/dev/null; then nano "$RSS_RULES"; else vi "$RSS_RULES"; fi; ok "已保存";;
+            5) cur=$(get_bool "flexget_enabled"); [[ "$cur" == "true" ]] && set_kv "flexget_enabled" "false" || set_kv "flexget_enabled" "true"; systemctl restart qbit-smart-limit; ok "状态已切换"; sleep 1 ;;
+            6) read -rp "  新间隔(秒): " v; [[ "$v" =~ ^[0-9]+$ ]] && set_kv "flexget_interval_sec" "$v" && systemctl restart qbit-smart-limit && ok "已更新" ;;
+            7) tail -n 20 "$RSS_LOG"; read -rp "..." ;;
+            0) return ;;
+        esac
+    done
+}
+
+autorm_menu() {
+    ensure_env
+    while true; do
+        show_banner; show_status
+        echo -e "  ${C}━━━━━━━━━━━━━━━ AutoRemove 菜单 ━━━━━━━━━━━━━━${N}"
+        echo -e "     ${G}1${N}. 开关模块              ${G}2${N}. 修改检查间隔"
+        echo -e "     ${G}3${N}. 查看当前策略          ${G}4${N}. 手动编辑策略"
+        echo -e "     ${G}5${N}. 查看删种日志          ${D}0${N}. 返回"
+        echo ""; read -rp "  选择: " c
+        case "$c" in
+            1) cur=$(get_bool "autoremove_enabled"); [[ "$cur" == "true" ]] && set_kv "autoremove_enabled" "false" || set_kv "autoremove_enabled" "true"; systemctl restart qbit-smart-limit; ok "状态已切换"; sleep 1 ;;
+            2) read -rp "  新间隔(秒): " v; [[ "$v" =~ ^[0-9]+$ ]] && set_kv "autoremove_interval_sec" "$v" && systemctl restart qbit-smart-limit && ok "已更新" ;;
+            3) jq -r 'to_entries[]|"\(.key+1). \(.value.name)"' "$AUTORM_RULES"; read -rp "..." ;;
+            4) if command -v nano >/dev/null; then nano "$AUTORM_RULES"; else vi "$AUTORM_RULES"; fi; systemctl restart qbit-smart-limit && ok "已保存并重启" ;;
+            5) tail -n 20 "$AUTORM_LOG"; read -rp "..." ;;
+            0) return ;;
+        esac
+    done
+}
+
+install_deps() {
+    echo ""; info "正在安装系统依赖..."
+    if command -v apt-get &>/dev/null; then 
+        apt-get update -qq &>/dev/null || true
+        apt-get install -y python3 python3-pip jq curl &>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        yum install -y python3 python3-pip jq curl -q &>/dev/null || true
+    fi
+    ok "系统依赖安装完成"
     
-    choice = input("\n请选择: ")
+    info "正在安装 Python 依赖..."
+    pip3 install --break-system-packages -q qbittorrent-api requests beautifulsoup4 lxml 2>/dev/null || pip3 install -q qbittorrent-api requests beautifulsoup4 lxml
+    ok "Python 依赖安装完成"
+}
+
+install_source_files() {
+    mkdir -p "${INSTALL_DIR}/src"
+    local base="${GITHUB_RAW}/src"
+    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
+    for f in "${files[@]}"; do 
+        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}"
+    done
+}
+
+do_install() {
+    show_banner
+    echo -e "  ${W}>>> 安装 qBit Smart Limit PRO <<<${N}"; echo ""
+    install_deps
+    mkdir -p "$INSTALL_DIR"
     
-    if choice == '2':
-        if input_bool(f"{Col.FAIL}确认清空所有删种规则吗?{Col.ENDC}"):
-            save_json(C.AUTORM_RULES, [])
+    download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
+    install_source_files
     
-    elif choice == '1':
-        name = input_clean("规则名称 (如: 删黑车)", "Rule1")
-        print(f"\n{Col.WARNING}以下条件满足其一即可删除 (留0或空则不限制){Col.ENDC}")
-        
-        max_dl = input_clean("下载速度超过此值不删 (KiB/s)", "0")
-        max_up = input_clean("上传速度超过此值不删 (KiB/s)", "0")
-        min_ratio = input_clean("分享率低于此值才删", "0")
-        seed_time = input_clean("做种时间超过此值才删 (秒)", "0")
-        
-        # 转换单位
-        rule = {
-            "name": name,
-            "max_dl_bps": int(max_dl) * 1024,
-            "max_up_bps": int(max_up) * 1024,
-            "min_ratio": float(min_ratio),
-            "min_seed_time": int(seed_time),
-            "remove_files": True
-        }
-        rules.append(rule)
-        save_json(C.AUTORM_RULES, rules)
-        input(f"\n按 {Col.BOLD}Enter{Col.ENDC} 键返回...")
-
-def show_menu(config_path):
-    while True:
-        print_banner()
-        print(f"配置文件: {config_path}")
-        print(f"{Col.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Col.ENDC}")
-        print(f"{Col.BOLD}1.{Col.ENDC} 📡 添加 RSS 订阅 (RSS Wizard)")
-        print(f"{Col.BOLD}2.{Col.ENDC} 🗑️ 管理 删种规则 (AutoRemove)")
-        print(f"{Col.BOLD}3.{Col.ENDC} ▶️ 启动 主服务 (Start Daemon)")
-        print(f"{Col.CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Col.ENDC}")
-        print(f"{Col.BOLD}0.{Col.ENDC} 退出")
-        
-        choice = input(f"\n{Col.GREEN}👉 请选择功能 [0-3]: {Col.ENDC}").strip()
-        
-        if choice == '1': wizard_add_rss()
-        elif choice == '2': wizard_manage_autoremove()
-        elif choice == '3':
-            print(f"\n{Col.GREEN}正在启动服务... (按 Ctrl+C 停止){Col.ENDC}")
-            try: Controller(config_path).run()
-            except KeyboardInterrupt: pass
-        elif choice == '0':
-            sys.exit(0)
-
-# ===========================
-# 🚀 程序入口
-# ===========================
-
-def run_task(task_name, config_path):
-    # 后台任务模式 (Systemd 调用)
-    controller = Controller(config_path)
-    if task_name == 'rss':
-        from src.workers import NativeRssWorker
-        controller._connect()
-        NativeRssWorker(controller).execute()
-    elif task_name == 'autoremove':
-        from src.workers import AutoRemoveWorker
-        controller._connect()
-        AutoRemoveWorker(controller).execute(dry_run=False)
-
-def main():
-    ensure_logs()
+    echo ""; echo -e "  ${C}>>> 配置 qBittorrent <<<${N}"
+    read -rp "  WebUI 地址 [http://127.0.0.1:8080]: " h; h=${h:-"http://127.0.0.1:8080"}
+    read -rp "  用户名 [admin]: " u; u=${u:-"admin"}
+    read -rsp "  密码: " p; echo ""
     
-    # 解析命令行参数
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", default=os.path.join(os.path.dirname(__file__), "config.json"))
-    parser.add_argument("--task", choices=['rss', 'autoremove'], help="执行特定后台任务")
-    parser.add_argument("--menu", action="store_true", help="强制显示菜单")
-    args = parser.parse_args()
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "host": "$h", "username": "$u", "password": "$(json_escape "$p")",
+  "target_speed_kib": 51200, "safety_margin": 0.98, "log_level": "INFO",
+  "telegram_bot_token": "", "telegram_chat_id": "", "u2_cookie": "",
+  "flexget_enabled": false, "flexget_interval_sec": 120,
+  "autoremove_enabled": false, "autoremove_interval_sec": 60
+}
+EOF
+    chmod 600 "$CONFIG_FILE"
 
-    # 如果有 --task 参数，直接执行后台任务 (Systemd 模式)
-    if args.task:
-        run_task(args.task, args.config)
-        return
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=qBit Smart Limit
+After=network.target
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 $MAIN_PY
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now qbit-smart-limit
+    
+    download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
+    chmod +x "$SCRIPT_PATH"
+    echo ""; echo -e "  ${G}安装完成! 请运行 qsl 命令打开管理面板${N}"
+}
 
-    # 否则，或者没有参数时，显示美化面板
-    # (如果是在后台 Systemd 运行且没带参数，会自动进入 Controller.run)
-    # 为了区分用户手动运行还是 Systemd 运行，简单的判断是看是否连接了 TTY
-    if sys.stdout.isatty() or args.menu:
-        try:
-            show_menu(args.config)
-        except KeyboardInterrupt:
-            print("\n再见 👋")
-    else:
-        # 非交互模式 (服务模式)
-        try: Controller(args.config).run()
-        except KeyboardInterrupt: pass
+do_update() {
+    echo ""; echo -e "  ${W}>>> 检查更新 <<<${N}"
+    local rv; rv=$(get_remote_ver)
+    if [[ -z "$rv" ]]; then err "获取远程版本失败"; return; fi
+    echo -e "  远程版本: ${C}$rv${N}"; echo -e "  本地版本: ${W}$(get_local_ver)${N}"
+    
+    read -rp "  确认更新? [y/N]: " c
+    if [[ "$c" =~ ^[Yy] ]]; then
+        download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
+        install_source_files
+        download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
+        chmod +x "$SCRIPT_PATH"
+        systemctl restart qbit-smart-limit && ok "更新完成" || err "服务启动失败"
+    fi
+}
 
-if __name__ == "__main__":
-    main()
+do_uninstall() {
+    echo ""; read -rp "  确认卸载? [y/N]: " confirm
+    [[ ! "$confirm" =~ ^[Yy] ]] && return
+    systemctl disable --now qbit-smart-limit 2>/dev/null
+    rm -f "$SERVICE_FILE" "$SCRIPT_PATH"
+    systemctl daemon-reload
+    read -rp "  删除数据文件(配置文件/日志)? [y/N]: " d
+    [[ "$d" =~ ^[Yy] ]] && rm -rf "$INSTALL_DIR"
+    ok "卸载完成"
+}
+
+main() {
+    if [[ $EUID -ne 0 ]]; then echo -e "${R}请使用 root 运行${N}"; exit 1; fi
+    ensure_env
+    while true; do
+        show_banner; show_status; show_menu
+        read -rp "  请选择: " choice
+        case "$choice" in
+            1) do_install ;;
+            2) if command -v nano >/dev/null; then nano "$CONFIG_FILE"; else vi "$CONFIG_FILE"; fi; systemctl restart qbit-smart-limit && ok "重启生效" ;;
+            3) systemctl restart qbit-smart-limit && ok "已重启" ;;
+            4) systemctl stop qbit-smart-limit && warn "已停止" ;;
+            5) journalctl -u qbit-smart-limit -f ;;
+            6) do_update ;;
+            10) rss_menu ;;
+            11) autorm_menu ;;
+            99) do_uninstall ;;
+            0) exit 0 ;;
+            *) echo "无效选择" ;;
+        esac
+        echo ""; read -rp "  按回车继续..."
+    done
+}
+
+main "$@"
