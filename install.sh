@@ -6,7 +6,7 @@
 
 # =========================================================
 # ⚠️ 请修改此处为你的 GitHub 仓库地址 (RAW 链接)
-GITHUB_RAW="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main"
+GITHUB_RAW="https://raw.githubusercontent.com/1336665/qbit_smart_limit/main"
 # =========================================================
 
 # 0. 强制环境变量
