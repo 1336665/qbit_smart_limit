@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# qBit Smart Limit 管理脚本 v11.1.0 PRO
-# 集成 FlexGet & AutoRemove | 一键配置向导 | 界面美化
+# qBit Smart Limit 管理脚本 v11.1.0 PRO (Final Fix)
+# 修复服务重启报错 | 修复 qsl 命令权限 | 完美适配集成架构
 #
 
 # =========================================================
@@ -40,10 +40,10 @@ err()  { echo -e "  ${R}✗${N} $1"; }
 warn() { echo -e "  ${Y}!${N} $1"; }
 info() { echo -e "  ${C}i${N} $1"; }
 
-# 管道安装逻辑
+# 管道安装逻辑 (curl -sL ... | bash)
 if [[ ! -t 0 ]]; then
     echo ""; echo -e "  ${C}安装管理脚本...${N}"
-    # 尝试下载自身，避免 cat > 截断问题
+    # 尝试下载自身
     if command -v curl >/dev/null; then
         curl -sL "${GITHUB_RAW}/install.sh" -o "$SCRIPT_PATH"
     else
@@ -56,7 +56,7 @@ if [[ ! -t 0 ]]; then
     exit 0
 fi
 
-# 获取远程版本 (修复报错的关键：提前定义)
+# 获取远程版本
 get_remote_ver() {
     curl -sL --connect-timeout 5 "${GITHUB_RAW}/src/consts.py" 2>/dev/null | grep -oP 'VERSION = "\K[^"]+' | head -1
 }
@@ -80,13 +80,26 @@ download() {
     
     if [[ "$http_code" == "200" && -s "$tmp" ]]; then
         mv "$tmp" "$dest"
-        [[ "$dest" == *.sh || "$dest" == *.py ]] && chmod +x "$dest"
+        # 为脚本赋予执行权限
+        [[ "$dest" == *.sh || "$dest" == *.py || "$dest" == *"/bin/qsl" ]] && chmod +x "$dest"
         echo -e "\r  ${G}✓${N} 下载 ${name}              "
         return 0
     fi
     rm -f "$tmp" 2>/dev/null
     echo -e "\r  ${R}✗${N} 下载 ${name} (HTTP $http_code)   "
     return 1
+}
+
+# 下载所有源文件 (src目录)
+install_source_files() {
+    mkdir -p "${INSTALL_DIR}/src"
+    local base="${GITHUB_RAW}/src"
+    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
+    
+    for f in "${files[@]}"; do
+        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}" || return 1
+    done
+    return 0
 }
 
 # 配置文件操作
@@ -178,7 +191,7 @@ show_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# FlexGet 模块
+# FlexGet 功能区
 # ════════════════════════════════════════════════════════════
 flexget_regen_config() {
     ensure_dirs
@@ -284,7 +297,7 @@ flexget_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# AutoRemove 模块
+# AutoRemove 功能区
 # ════════════════════════════════════════════════════════════
 autorm_show_rules() {
     ensure_dirs
@@ -379,7 +392,8 @@ autorm_menu() {
         echo -e "     ${G}5${N}. 删除删除策略          ${G}6${N}. 修改检查间隔"
         echo -e "     ${G}7${N}. 模拟预览 (Dry Run)    ${G}8${N}. 查看日志"
         echo -e "     ${D}0${N}. 返回"
-        echo ""; read -rp "  选择: " c
+        echo ""
+        read -rp "  选择: " c
         case "$c" in
             1) autorm_quick_setup; read -rp "按回车继续..." ;;
             2) cur=$(get_bool "autoremove_enabled")
@@ -399,6 +413,24 @@ autorm_menu() {
 # ════════════════════════════════════════════════════════════
 # 核心安装与更新
 # ════════════════════════════════════════════════════════════
+create_service_file() {
+    cat > "$SERVICE_FILE" << EOFSVC
+[Unit]
+Description=qBit Smart Limit Service
+After=network.target
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 $MAIN_PY
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target
+EOFSVC
+    systemctl daemon-reload
+    systemctl enable qbit-smart-limit &>/dev/null || true
+}
+
 install_deps() {
     echo ""; info "安装系统依赖..."
     if command -v apt-get &>/dev/null; then
@@ -411,15 +443,6 @@ install_deps() {
         pip3 install --break-system-packages -q qbittorrent-api flexget 2>/dev/null || pip3 install -q qbittorrent-api flexget 2>/dev/null || true
     fi
     ok "依赖安装完成"
-}
-
-install_source_files() {
-    mkdir -p "${INSTALL_DIR}/src"
-    local base="${GITHUB_RAW}/src"
-    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
-    for f in "${files[@]}"; do
-        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}" || return 1
-    done
 }
 
 do_install() {
@@ -436,21 +459,7 @@ do_install() {
         ok "生成初始配置"
     fi
     
-    cat > "$SERVICE_FILE" << EOFSVC
-[Unit]
-Description=qBit Smart Limit Service
-After=network.target
-[Service]
-Type=simple
-WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/python3 $MAIN_PY
-Restart=always
-RestartSec=10
-[Install]
-WantedBy=multi-user.target
-EOFSVC
-    systemctl daemon-reload
-    systemctl enable qbit-smart-limit &>/dev/null || true
+    create_service_file
     systemctl start qbit-smart-limit && ok "服务已启动"
     
     download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本" || true
@@ -467,7 +476,17 @@ do_update() {
     if [[ "$c" =~ ^[Yy] ]]; then
         download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
         install_source_files
+        
+        # 修复：下载脚本并赋予权限
         download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
+        chmod +x "$SCRIPT_PATH"
+        
+        # 修复：如果服务文件不存在，自动创建
+        if [[ ! -f "$SERVICE_FILE" ]]; then
+            warn "服务文件丢失，正在重建..."
+            create_service_file
+        fi
+        
         systemctl restart qbit-smart-limit
         ok "更新完成"
     fi
@@ -477,8 +496,8 @@ do_uninstall() {
     echo ""; echo -e "  ${R}>>> 卸载 <<<${N}"
     read -rp "  确认卸载? [y/N]: " confirm
     [[ ! "$confirm" =~ ^[Yy] ]] && return
-    systemctl stop qbit-smart-limit
-    systemctl disable qbit-smart-limit
+    systemctl stop qbit-smart-limit 2>/dev/null
+    systemctl disable qbit-smart-limit 2>/dev/null
     rm -f "$SERVICE_FILE" "$SCRIPT_PATH"
     systemctl daemon-reload
     read -rp "  删除配置文件? [y/N]: " d
@@ -486,9 +505,16 @@ do_uninstall() {
     ok "卸载完成"
 }
 
+# ════════════════════════════════════════════════════════════
+# 主循环
+# ════════════════════════════════════════════════════════════
+init_env() {
+    ensure_dirs
+}
+
 main() {
     if [[ $EUID -ne 0 ]]; then echo -e "${R}请使用 root 运行${N}"; exit 1; fi
-    ensure_dirs
+    init_env
     while true; do
         show_banner; show_status; show_menu
         read -rp "  请选择: " choice
