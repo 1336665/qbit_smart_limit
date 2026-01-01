@@ -1,4 +1,3 @@
-cat > /opt/qbit-smart-limit/src/helper_bot.py <<EOF
 import threading
 import queue
 import requests
@@ -158,7 +157,6 @@ class Notifier:
             name = escape_html(state.name[:25])
             phase = state.get_phase(now)
             tl = state.get_tl(now)
-            # 兼容性处理
             speed = getattr(state.limit_controller.kalman, 'x', 0) if hasattr(state, 'limit_controller') else 0
             
             phase_emoji = {'warmup': '🔥', 'catch': '🏃', 'steady': '⚖️', 'finish': '🎯'}.get(phase, '❓')
@@ -215,9 +213,7 @@ class Notifier:
     def _cmd_unknown(self, args):
         self.send_immediate("❓ 未知命令，发送 /help 查看帮助")
 
-    # ==========================================
-    # 👇 关键修复：添加 u2_enabled 参数 👇
-    # ==========================================
+    # [修复] 参数对齐
     def startup(self, config, qb_version: str = "", u2_enabled: bool = False):
         if not self.enabled: return
         msg = f"""🚀 <b>qBit Smart Limit 已启动</b>
@@ -301,7 +297,3 @@ class Notifier:
 └ {reason}
 📦 释放空间: <code>{size}</code>"""
         self.send(msg, f"autorm_{name[:10]}", 0)
-EOF
-
-systemctl restart qbit-smart-limit
-systemctl status qbit-smart-limit
