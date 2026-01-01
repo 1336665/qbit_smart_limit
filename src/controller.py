@@ -6,7 +6,7 @@ import qbittorrentapi
 from .config import Config
 from .database import Database
 from .logic import Logic
-# === 关键修改：导入 Notifier 而不是 TelegramBot ===
+# === 注意这里：必须导入 Notifier ===
 from .helper_bot import Notifier
 from .workers import NativeRssWorker, AutoRemoveWorker
 from .consts import C
@@ -18,8 +18,8 @@ class Controller:
         self.config = Config(config_path)
         self.db = Database()
         
-        # === 关键修改：初始化 Notifier ===
-        self.notifier = Notifier(self)
+        # === 初始化通知器 ===
+        self.notifier = Notifier(self) 
         
         self.client = None
         self.logic = Logic(self)
@@ -48,7 +48,6 @@ class Controller:
     def stop(self, signum=None, frame=None):
         self.running = False
         logger.info("正在停止服务...")
-        # 发送关闭通知并清理线程
         if hasattr(self, 'notifier'):
             try:
                 self.notifier.shutdown_report()
@@ -59,7 +58,7 @@ class Controller:
         logger.info(f"qBit Smart Limit {C.VERSION} 启动中...")
         self._connect()
         
-        # 启动工作线程 (RSS 和 删种)
+        # 启动工作线程
         threads = [
             NativeRssWorker(self),
             AutoRemoveWorker(self)
@@ -70,13 +69,10 @@ class Controller:
         # 主循环
         while self.running:
             try:
-                # 掉线重连机制
                 if not self.client:
                     self._connect()
-                
-                # 可以在这里添加其他定时的维护任务
-                
                 time.sleep(5)
             except Exception as e:
                 logger.error(f"主循环异常: {e}")
                 time.sleep(5)
+
