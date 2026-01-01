@@ -13,7 +13,6 @@ class NativeRssWorker(threading.Thread):
         super().__init__(name="NativeRSS", daemon=True)
         self.c = controller
         self.history = set()
-        # 首次运行判断：如果没有历史文件，视为首次运行
         self.is_first_run = not os.path.exists(C.RSS_HISTORY)
         self._load_history()
         
@@ -91,14 +90,10 @@ class NativeRssWorker(threading.Thread):
         for feed in feeds:
             feed_url = feed.get('url')
             if not feed_url: continue
-            
             cookie_str = feed.get('cookie', '')
             cookie_dict = {}
             if cookie_str:
                 cookie_dict = {k.strip(): v.strip() for k, v in (c.split('=', 1) for c in cookie_str.split(';') if '=' in c)}
-
-            # === 获取配置: 是否优先下载首尾块 ===
-            # 默认为 False，需要在 feeds.json 里开启
             first_last_prio = feed.get('first_last_piece', False) 
             
             try:
@@ -106,61 +101,42 @@ class NativeRssWorker(threading.Thread):
                 if resp.status_code != 200: 
                     logger.warning(f"RSS Fetch Failed: {resp.status_code}")
                     continue
-                    
                 try: root = ET.fromstring(resp.content)
                 except: root = ET.fromstring(resp.content.decode('utf-8', 'ignore'))
-                    
                 items = root.findall('./channel/item')
                 
                 for item in items:
                     title_elem = item.find('title')
                     if title_elem is None: continue
                     title = title_elem.text
-                    
                     dl_link = self.get_download_link(item)
                     if not dl_link: continue
-                    
                     if dl_link in self.history: continue
-
-                    # 首次运行跳过逻辑
+                    
                     if self.is_first_run:
                         self.history.add(dl_link)
                         skipped_count += 1
                         continue
                     
                     if feed.get('must_contain') and feed['must_contain'].lower() not in title.lower(): continue
-                    
                     size_bytes = self.parse_size(item)
                     size_gb = size_bytes / (1024**3)
                     max_size = float(feed.get('max_size_gb', 0))
                     if max_size > 0 and size_gb > max_size: continue
-                    
                     if feed.get('enable_scrape'):
                         detail_link = item.find('link').text
-                        if not cookie_dict or not self.check_free_via_cookie(detail_link, cookie_dict):
-                            continue
+                        if not cookie_dict or not self.check_free_via_cookie(detail_link, cookie_dict): continue
 
                     success = False
-                    
-                    # === 添加种子时传入 first_last_piece_prio 参数 ===
                     if cookie_dict:
                         torrent_data = self.download_torrent_file(dl_link, cookie_dict)
                         if torrent_data:
-                            self.c.client.torrents_add(
-                                torrent_files=torrent_data, 
-                                category=feed.get('category', 'Racing'),
-                                first_last_piece_prio=first_last_prio  # 关键参数
-                            )
+                            self.c.client.torrents_add(torrent_files=torrent_data, category=feed.get('category', 'Racing'), first_last_piece_prio=first_last_prio)
                             success = True
                             logger.info(f"RSS Add (File): {title}")
-                        else:
-                            logger.error(f"Failed to download .torrent: {title}")
+                        else: logger.error(f"Failed to download .torrent: {title}")
                     else:
-                        self.c.client.torrents_add(
-                            urls=dl_link, 
-                            category=feed.get('category', 'Racing'),
-                            first_last_piece_prio=first_last_prio  # 关键参数
-                        )
+                        self.c.client.torrents_add(urls=dl_link, category=feed.get('category', 'Racing'), first_last_piece_prio=first_last_prio)
                         success = True
                         logger.info(f"RSS Add (URL): {title}")
 
@@ -171,15 +147,12 @@ class NativeRssWorker(threading.Thread):
                             with open(C.RSS_LOG, 'a') as f:
                                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ADD: {title} | {size_gb:.2f}GB\n")
                         except: pass
-                    
-            except Exception as e: 
-                logger.error(f"RSS Process Error: {e}")
+            except Exception as e: logger.error(f"RSS Process Error: {e}")
 
         if self.is_first_run:
             self.is_first_run = False
             self._save_history()
-            if skipped_count > 0:
-                logger.info(f"✨ 首次运行初始化完成：已跳过 {skipped_count} 个现有种子")
+            if skipped_count > 0: logger.info(f"✨ 首次运行初始化完成：已跳过 {skipped_count} 个现有种子")
 
         duration = wall_time() - start_time
         if total_added > 0:
@@ -188,8 +161,7 @@ class NativeRssWorker(threading.Thread):
 
     def run(self):
         while self.c.running:
-            if not self.c.config.flexget_enabled: 
-                time.sleep(10); continue
+            if not self.c.config.flexget_enabled: time.sleep(10); continue
             try: self.execute()
             except: pass
             time.sleep(max(60, int(self.c.config.flexget_interval_sec)))
@@ -212,11 +184,19 @@ class AutoRemoveWorker(threading.Thread):
             with open(C.AUTORM_STATE, 'w') as f: json.dump(self.state, f)
         except: pass
 
-    def get_disk_free(self, path):
-        try: st = os.statvfs(path); return st.f_bavail * st.f_frsize
-        except:
-            try: return os.statvfs("/").f_bavail * os.statvfs("/").f_frsize
-            except: return 0
+    # ==========================================
+    # 👇 关键修复：从 qBittorrent API 获取空间 👇
+    # ==========================================
+    def get_remote_free_space(self):
+        try:
+            # 使用 sync_maindata 获取服务器全局信息
+            info = self.c.client.sync_maindata()
+            # 获取 'free_space_on_disk' (字节)
+            # 注意：这是 qB 报告的全局剩余空间，通常是默认下载路径的空间
+            free_space = info.get('server_state', {}).get('free_space_on_disk', 0)
+            return free_space
+        except Exception:
+            return 0
 
     def execute(self, dry_run=False):
         if not os.path.exists(C.AUTORM_RULES): return
@@ -231,17 +211,28 @@ class AutoRemoveWorker(threading.Thread):
         now = time.time()
         deletions = []
 
+        # 获取远程 qB 的真实剩余空间 (一次获取，全局通用)
+        remote_free_space = self.get_remote_free_space()
+
         if dry_run: print(f"\n{'[Mode]':<10} {'[Rule]':<20} {'[Name]'}\n" + "-"*60)
 
         for t in torrents:
-            save_path = getattr(t, 'save_path', '/')
-            free_space = self.get_disk_free(save_path)
+            # 移除本地 os.statvfs 检查，改用远程空间
+            free_space = remote_free_space
             upspeed = getattr(t, 'upspeed', 0)
             dlspeed = getattr(t, 'dlspeed', 0)
             
             for idx, r in enumerate(rules):
                 should_delete = True
-                if r.get("min_free_gb", 0) > 0 and free_space >= float(r["min_free_gb"])*1024**3: should_delete = False
+                
+                # 规则判断逻辑
+                if r.get("min_free_gb", 0) > 0:
+                    # 如果获取到的远程空间为0(API不支持或错误)，为了安全起见，不执行空间删种
+                    if free_space <= 0:
+                        should_delete = False
+                    elif free_space >= float(r["min_free_gb"])*1024**3: 
+                        should_delete = False
+                
                 if r.get("require_complete") and t.progress < 0.999: should_delete = False
                 if r.get("max_up_bps", 0) > 0 and upspeed > int(r["max_up_bps"]): should_delete = False
                 if r.get("max_dl_bps", 0) > 0 and dlspeed > int(r["max_dl_bps"]): should_delete = False
