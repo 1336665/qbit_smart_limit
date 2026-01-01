@@ -1,0 +1,4 @@
+requests
+qbittorrent-api
+beautifulsoup4
+lxml
