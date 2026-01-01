@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/bin/bas
 #
-# qBit Smart Limit 管理脚本 v11.3.2 FINAL
-# 核心修复: 强制使用 python3 -m flexget | 修复更新覆盖问题
+# qBit Smart Limit 管理脚本 v11.3.3 FINAL FIX
+# 核心修复: 强制 python3 -m pip 安装依赖 | 显式错误输出
 #
 
 # =========================================================
@@ -9,7 +9,7 @@
 GITHUB_RAW="https://raw.githubusercontent.com/1336665/qbit_smart_limit/main"
 # =========================================================
 
-# 0. 强制环境变量 (解决 command not found 核心)
+# 0. 强制环境变量
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$HOME/.local/bin
 
 # 路径配置
@@ -48,19 +48,15 @@ err()  { echo -e "  ${R}✗${N} $1"; }
 warn() { echo -e "  ${Y}!${N} $1"; }
 info() { echo -e "  ${C}i${N} $1"; }
 
-# 确保环境与日志存在
 ensure_env() {
     mkdir -p "$FLEXGET_DIR" "$AUTORM_DIR" "${INSTALL_DIR}/src" "/var/log" >/dev/null 2>&1 || true
     [[ -f "$FLEXGET_SUBS" ]] || echo '{"tasks":[]}' > "$FLEXGET_SUBS"
     [[ -f "$AUTORM_RULES" ]] || echo '[]' > "$AUTORM_RULES"
     [[ -f "$FLEXGET_CFG" ]] || touch "$FLEXGET_CFG"
-    
-    # 强制创建日志文件
     touch "$FLEXGET_LOG" "$AUTORM_LOG"
     chmod 644 "$FLEXGET_LOG" "$AUTORM_LOG" 2>/dev/null || true
 }
 
-# 配置文件操作
 get_bool() { jq -r ".$1 // false" "$CONFIG_FILE" 2>/dev/null; }
 get_val() { jq -r ".$1 // \"$2\"" "$CONFIG_FILE" 2>/dev/null; }
 set_kv() {
@@ -70,11 +66,9 @@ set_kv() {
     mv "$tmp" "$CONFIG_FILE" && chmod 600 "$CONFIG_FILE"
 }
 
-# 版本检测
 get_remote_ver() { curl -sL --connect-timeout 5 "${GITHUB_RAW}/src/consts.py" 2>/dev/null | grep -oP 'VERSION = "\K[^"]+' | head -1; }
 get_local_ver() { [[ -f "${INSTALL_DIR}/src/consts.py" ]] && grep -oP 'VERSION = "\K[^"]+' "${INSTALL_DIR}/src/consts.py" 2>/dev/null | head -1 || echo "-"; }
 
-# 下载器
 download() {
     local url="$1" dest="$2" name="$3"
     local tmp="/tmp/qsl_dl_$$.tmp"
@@ -101,7 +95,7 @@ show_banner() {
     echo -e "${C}  ┃${N}  ${G}██ ▄▄ ██ ${W}██   ██ ${C}██${N}    ██           ${G}██${N} ${W}██${N}          ${C}┃${N}"
     echo -e "${C}  ┃${N}  ${G} ██████  ${W}██████  ${C}██${N}    ██      ${G}███████${N} ${W}███████${N}     ${C}┃${N}"
     echo -e "${C}  ┃${N}  ${G}    ▀▀${N}                                              ${C}┃${N}"
-    echo -e "${C}  ┃${N}         ${Y}qBit Smart Limit v11.3.2 PRO${N}                  ${C}┃${N}"
+    echo -e "${C}  ┃${N}         ${Y}qBit Smart Limit v11.3.3 PRO${N}                  ${C}┃${N}"
     echo -e "${C}  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${N}"
     echo ""
 }
@@ -140,8 +134,29 @@ show_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 3. FlexGet 逻辑 (Python Direct Call)
+# 3. FlexGet 逻辑 (强化修复版)
 # ════════════════════════════════════════════════════════════
+check_and_fix_flexget() {
+    if ! python3 -c "import flexget" &>/dev/null; then
+        warn "FlexGet 模块未找到，正在尝试强制安装..."
+        echo -e "${D}正在执行: python3 -m pip install flexget ...${N}"
+        
+        # 尝试标准安装
+        if ! python3 -m pip install flexget; then
+            echo -e "${Y}标准安装失败，尝试 --break-system-packages...${N}"
+            python3 -m pip install flexget --break-system-packages
+        fi
+        
+        # 再次检查
+        if ! python3 -c "import flexget" &>/dev/null; then
+            err "FlexGet 安装失败！请尝试手动运行: python3 -m pip install flexget --break-system-packages"
+            return 1
+        fi
+        ok "FlexGet 安装修复成功"
+    fi
+    return 0
+}
+
 flexget_regen_config() {
     python3 - <<'PY' >/dev/null 2>&1
 import json, os
@@ -175,15 +190,12 @@ PY
 }
 
 flexget_run_now() {
-    echo ""; info "正在调用 Python 模块运行 FlexGet..."
+    echo ""; info "准备运行 FlexGet (Module Mode)..."
     
-    # 强制检查依赖
-    if ! python3 -c "import flexget" &>/dev/null; then
-        warn "FlexGet 模块缺失，尝试安装..."
-        pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget
-    fi
+    # 先检查并修复
+    check_and_fix_flexget || { read -rp "按回车继续..."; return; }
 
-    # 核心修复：不使用 binary，直接用 python3 -m flexget
+    # 使用模块方式运行
     python3 -m flexget -c "$FLEXGET_CFG" --logfile "$FLEXGET_LOG" execute
     
     echo ""; ok "执行完毕"; read -rp "按回车继续..."
@@ -205,6 +217,10 @@ flexget_quick_setup() {
     if [[ ! "$c" =~ ^[Nn] ]]; then set_kv "flexget_enabled" "true"; ok "已启用"; else set_kv "flexget_enabled" "false"; warn "已禁用"; return; fi
     read -rp "  2. 抓取间隔(秒) [120]: " iv; iv=${iv:-120}
     [[ "$iv" =~ ^[0-9]+$ ]] && set_kv "flexget_interval_sec" "$iv" && ok "间隔: ${iv}s"
+    
+    # 自动尝试修复环境
+    check_and_fix_flexget
+    
     echo ""; read -rp "  3. 添加订阅? [Y/n]: " s
     [[ ! "$s" =~ ^[Nn] ]] && flexget_add_sub
     echo ""; read -rp "  立即重启服务生效? [Y/n]: " r
@@ -237,7 +253,7 @@ flexget_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. AutoRemove 逻辑 (Python Direct Call)
+# 4. AutoRemove 逻辑
 # ════════════════════════════════════════════════════════════
 autorm_preview() {
     info "正在生成预览报告 (Dry Run)..."
@@ -277,7 +293,7 @@ autorm_quick_setup() {
     read -rp "  2. 检查间隔(秒) [1800]: " iv; iv=${iv:-1800}
     [[ "$iv" =~ ^[0-9]+$ ]] && set_kv "autoremove_interval_sec" "$iv" && ok "间隔: ${iv}s"
     
-    echo ""; info "写入 3 条默认阶梯规则..."
+    echo ""; info "写入默认删种规则..."
     cat > "$AUTORM_RULES" <<EOF
 [
   {"name":"空间极危 (<5G)","min_free_gb":5,"max_up_bps":5242880,"min_low_sec":60,"require_complete":false},
@@ -319,14 +335,14 @@ autorm_menu() {
             5) autorm_del_rule ;;
             6) read -rp "  新间隔(秒): " v; [[ "$v" =~ ^[0-9]+$ ]] && set_kv "autoremove_interval_sec" "$v" && systemctl restart qbit-smart-limit && ok "已更新" ;;
             7) autorm_preview ;;
-            8) tail -n 20 "$AUTORM_LOG"; read -rp "..." ;;
+            8) ensure_env; tail -n 20 "$AUTORM_LOG"; read -rp "..." ;;
             0) return ;;
         esac
     done
 }
 
 # ════════════════════════════════════════════════════════════
-# 5. 安装与更新
+# 5. 安装与更新逻辑
 # ════════════════════════════════════════════════════════════
 install_deps() {
     echo ""; info "安装系统依赖..."
@@ -338,9 +354,18 @@ install_deps() {
     fi
     ok "系统依赖安装完成"
     
-    info "安装 Python 依赖..."
-    pip3 install --break-system-packages -q qbittorrent-api flexget requests beautifulsoup4 lxml 2>/dev/null || pip3 install -q qbittorrent-api flexget requests beautifulsoup4 lxml
+    info "安装 Python 依赖 (含 FlexGet)..."
+    python3 -m pip install --break-system-packages -q qbittorrent-api flexget requests beautifulsoup4 lxml 2>/dev/null || python3 -m pip install -q qbittorrent-api flexget requests beautifulsoup4 lxml
     ok "Python 依赖安装完成"
+}
+
+install_source_files() {
+    mkdir -p "${INSTALL_DIR}/src"
+    local base="${GITHUB_RAW}/src"
+    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
+    for f in "${files[@]}"; do
+        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}" || return 1
+    done
 }
 
 get_input() {
@@ -364,7 +389,7 @@ EOF
 }
 
 create_service_file() {
-    cat > "$SERVICE_FILE" << EOFSVC
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=qBit Smart Limit
 After=network.target
@@ -375,7 +400,7 @@ ExecStart=/usr/bin/python3 $MAIN_PY
 Restart=always
 [Install]
 WantedBy=multi-user.target
-EOFSVC
+EOF
     systemctl daemon-reload
     systemctl enable qbit-smart-limit &>/dev/null || true
 }
@@ -386,11 +411,7 @@ do_install() {
     install_deps; mkdir -p "$INSTALL_DIR"
     
     download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py" || return 1
-    # 下载 src 目录
-    local base="${GITHUB_RAW}/src"
-    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
-    mkdir -p "${INSTALL_DIR}/src"
-    for f in "${files[@]}"; do download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}"; done
+    install_source_files || return 1
     
     get_input; create_service_file; ensure_env
     systemctl start qbit-smart-limit && ok "服务已启动"
@@ -403,16 +424,15 @@ do_install() {
 do_update() {
     echo ""; echo -e "  ${W}>>> 检查更新 <<<${N}"
     local rv; rv=$(get_remote_ver)
-    if [[ -z "$rv" ]]; then err "获取版本失败"; return; fi
+    if [[ -z "$rv" ]]; then err "获取版本失败 (网络错误?)"; return; fi
     echo -e "  远程版本: ${C}$rv${N}"; echo -e "  本地版本: ${W}$(get_local_ver)${N}"
     
     read -rp "  确认更新? [y/N]: " c
     if [[ "$c" =~ ^[Yy] ]]; then
-        # 注意: 这里需要确保你已将新代码推送到 GitHub
         download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
-        local base="${GITHUB_RAW}/src"
-        local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
-        for f in "${files[@]}"; do download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}"; done
+        install_source_files
+        download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
+        chmod +x "$SCRIPT_PATH"
         
         # 智能修复服务
         if [[ ! -f "$SERVICE_FILE" ]]; then create_service_file; fi
@@ -437,7 +457,7 @@ do_uninstall() {
 # ════════════════════════════════════════════════════════════
 main() {
     if [[ $EUID -ne 0 ]]; then echo -e "${R}请使用 root 运行${N}"; exit 1; fi
-    ensure_dirs
+    ensure_env
     while true; do
         show_banner; show_status; show_menu
         read -rp "  请选择: " choice
