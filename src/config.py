@@ -23,6 +23,13 @@ class Config:
     peer_list_enabled: bool = True
     enable_dl_limit: bool = True
     enable_reannounce_opt: bool = True
+    
+    # === 新增模块开关 ===
+    flexget_enabled: bool = False
+    flexget_interval_sec: int = 120
+    autoremove_enabled: bool = False
+    autoremove_interval_sec: int = 1800
+    
     _mtime: float = 0
     
     @property
@@ -58,6 +65,13 @@ class Config:
                 peer_list_enabled=bool(d.get('peer_list_enabled', True)),
                 enable_dl_limit=bool(d.get('enable_dl_limit', True)),
                 enable_reannounce_opt=bool(d.get('enable_reannounce_opt', True)),
+                
+                # === 新增参数 ===
+                flexget_enabled=bool(d.get('flexget_enabled', False)),
+                flexget_interval_sec=int(d.get('flexget_interval_sec', 120)),
+                autoremove_enabled=bool(d.get('autoremove_enabled', False)),
+                autoremove_interval_sec=int(d.get('autoremove_interval_sec', 1800)),
+                
                 _mtime=mtime
             )
             
