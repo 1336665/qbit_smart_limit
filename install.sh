@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# qBit Smart Limit 管理脚本 v11.2.1 PRO (FlexGet Fix)
-# 修复 command not found | 增强依赖管理 | 全交互向导
+# qBit Smart Limit 管理脚本 v11.2.2 PRO (Log Fix & Custom Ru
+# 修复日志不存在报错 | 内置定制化删种规则 | 强化服务修复能力
 #
 
 # =========================================================
@@ -87,12 +87,16 @@ clean_cookie() {
     echo "$c"
 }
 
-# 目录初始化
+# 目录与日志初始化 (修复日志报错的关键)
 ensure_dirs() {
     mkdir -p "$FLEXGET_DIR" "$AUTORM_DIR" "${INSTALL_DIR}/src" "/var/log" >/dev/null 2>&1 || true
     [[ -f "$FLEXGET_SUBS" ]] || echo '{"tasks":[]}' > "$FLEXGET_SUBS"
     [[ -f "$AUTORM_RULES" ]] || echo '[]' > "$AUTORM_RULES"
     [[ -f "$FLEXGET_CFG" ]] || touch "$FLEXGET_CFG"
+    
+    # 自动创建日志文件防止 tail 报错
+    [[ -f "$FLEXGET_LOG" ]] || touch "$FLEXGET_LOG"
+    [[ -f "$AUTORM_LOG" ]] || touch "$AUTORM_LOG"
 }
 
 # 版本获取
@@ -127,107 +131,7 @@ download() {
     return 1
 }
 
-# ════════════════════════════════════════════════════════════
-# 2. 核心功能：安装与配置
-# ════════════════════════════════════════════════════════════
-
-# 交互式配置输入
-get_input() {
-    echo ""
-    echo -e "  ${C}━━━━━━━━━━━━━━ qBittorrent 设置 ━━━━━━━━━━━━━━━${N}"
-    
-    read -rp "  WebUI 地址 [http://127.0.0.1:8080]: " QB_HOST
-    QB_HOST=${QB_HOST:-"http://127.0.0.1:8080"}
-    
-    read -rp "  用户名 [admin]: " QB_USER
-    QB_USER=${QB_USER:-"admin"}
-    
-    read -rsp "  密码: " QB_PASS
-    echo ""
-    if [[ -z "$QB_PASS" ]]; then err "密码不能为空"; return 1; fi
-    
-    echo ""
-    echo -e "  ${C}━━━━━━━━━━━━━━━━ 速度设置 ━━━━━━━━━━━━━━━━━━━${N}"
-    
-    read -rp "  目标速度 KiB/s [51200]: " TARGET
-    TARGET=${TARGET:-51200}
-    
-    read -rp "  安全系数 [0.98]: " SAFETY
-    SAFETY=${SAFETY:-0.98}
-    
-    read -rp "  Tracker 关键词 (留空匹配所有): " TRACKER
-    TRACKER=${TRACKER:-""}
-    
-    echo ""
-    echo -e "  ${C}━━━━━━━━━━━━━ 高级功能 (PRO) ━━━━━━━━━━━━━━━${N}"
-    
-    read -rp "  启用下载限速? [Y/n]: " DL_LIMIT
-    [[ "$DL_LIMIT" =~ ^[Nn] ]] && ENABLE_DL_LIMIT="false" || ENABLE_DL_LIMIT="true"
-    
-    read -rp "  启用汇报优化? [Y/n]: " RA_OPT
-    [[ "$RA_OPT" =~ ^[Nn] ]] && ENABLE_RA_OPT="false" || ENABLE_RA_OPT="true"
-    
-    echo ""
-    echo -e "  ${C}━━━━━━━━━━━━━ Telegram 通知 (可选) ━━━━━━━━━━━━${N}"
-    read -rp "  Bot Token: " TG_TOKEN
-    TG_TOKEN=${TG_TOKEN:-""}
-    TG_CHAT=""
-    if [[ -n "$TG_TOKEN" ]]; then read -rp "  Chat ID: " TG_CHAT; fi
-    
-    echo ""
-    echo -e "  ${C}━━━━━━━━━━━━━━ U2 Cookie (可选) ━━━━━━━━━━━━━━━${N}"
-    read -rp "  Cookie (Value only): " U2_COOKIE
-    U2_COOKIE=$(clean_cookie "${U2_COOKIE:-""}")
-    
-    read -rp "  HTTP 代理 (可选): " PROXY
-    PROXY=${PROXY:-""}
-    
-    return 0
-}
-
-# 保存配置到文件
-save_config() {
-    mkdir -p "$INSTALL_DIR"
-    local peer="false"
-    [[ -n "$U2_COOKIE" ]] && peer="true"
-    
-    local esc_pass=$(json_escape "$QB_PASS")
-    local esc_token=$(json_escape "$TG_TOKEN")
-    local esc_chat=$(json_escape "$TG_CHAT")
-    local esc_cookie=$(json_escape "$U2_COOKIE")
-    local esc_proxy=$(json_escape "$PROXY")
-    
-    cat > "$CONFIG_FILE" << EOFCFG
-{
-  "host": "$QB_HOST",
-  "username": "$QB_USER",
-  "password": "$esc_pass",
-  "target_speed_kib": $TARGET,
-  "safety_margin": $SAFETY,
-  "log_level": "INFO",
-  "target_tracker_keyword": "$TRACKER",
-  "exclude_tracker_keyword": "",
-  "telegram_bot_token": "$esc_token",
-  "telegram_chat_id": "$esc_chat",
-  "max_physical_speed_kib": 0,
-  "api_rate_limit": 20,
-  "u2_cookie": "$esc_cookie",
-  "proxy": "$esc_proxy",
-  "peer_list_enabled": $peer,
-  "enable_dl_limit": $ENABLE_DL_LIMIT,
-  "enable_reannounce_opt": $ENABLE_RA_OPT,
-  "flexget_enabled": false,
-  "flexget_interval_sec": 120,
-  "autoremove_enabled": false,
-  "autoremove_interval_sec": 1800
-}
-EOFCFG
-    chmod 600 "$CONFIG_FILE"
-    if ! jq empty "$CONFIG_FILE" &>/dev/null; then err "配置文件生成失败"; return 1; fi
-    return 0
-}
-
-# 创建 Systemd 服务文件
+# 创建 Systemd 服务文件 (修复 Update 报错)
 create_service_file() {
     cat > "$SERVICE_FILE" << EOFSVC
 [Unit]
@@ -248,44 +152,8 @@ EOFSVC
     systemctl enable qbit-smart-limit &>/dev/null || true
 }
 
-# 下载源文件
-install_source_files() {
-    mkdir -p "${INSTALL_DIR}/src"
-    local base="${GITHUB_RAW}/src"
-    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
-    
-    for f in "${files[@]}"; do
-        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}" || return 1
-    done
-    return 0
-}
-
-# 安装依赖
-install_deps() {
-    echo ""; info "安装系统依赖..."
-    if command -v apt-get &>/dev/null; then
-        apt-get update -qq &>/dev/null || true
-        apt-get install -y python3 python3-pip jq curl python3-requests python3-bs4 python3-lxml -qq &>/dev/null || true
-    elif command -v yum &>/dev/null; then
-        yum install -y python3 python3-pip jq curl -q &>/dev/null || true
-    fi
-    
-    ok "系统依赖"
-    info "检查 Python 依赖..."
-    if ! python3 -c "import qbittorrentapi" &>/dev/null; then
-        pip3 install --break-system-packages -q qbittorrent-api flexget 2>/dev/null || pip3 install -q qbittorrent-api flexget 2>/dev/null || true
-    fi
-    # 强制检查 FlexGet
-    if ! command -v flexget &>/dev/null; then
-        warn "FlexGet 未找到，尝试强制安装..."
-        pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget 2>/dev/null || true
-    fi
-    ok "Python 依赖"
-    return 0
-}
-
 # ════════════════════════════════════════════════════════════
-# 3. 界面逻辑
+# 2. 界面显示
 # ════════════════════════════════════════════════════════════
 show_banner() {
     clear
@@ -297,7 +165,7 @@ show_banner() {
     echo -e "${C}  ┃${N}  ${G}██ ▄▄ ██ ${W}██   ██ ${C}██${N}    ██           ${G}██${N} ${W}██${N}          ${C}┃${N}"
     echo -e "${C}  ┃${N}  ${G} ██████  ${W}██████  ${C}██${N}    ██      ${G}███████${N} ${W}███████${N}     ${C}┃${N}"
     echo -e "${C}  ┃${N}  ${G}    ▀▀${N}                                              ${C}┃${N}"
-    echo -e "${C}  ┃${N}         ${Y}qBit Smart Limit v${SCRIPT_VER:-11.2.1} PRO${N}            ${C}┃${N}"
+    echo -e "${C}  ┃${N}         ${Y}qBit Smart Limit v${SCRIPT_VER:-11.2.2} PRO${N}            ${C}┃${N}"
     echo -e "${C}  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${N}"
     echo ""
 }
@@ -312,10 +180,8 @@ show_status() {
     if [[ -f "$CONFIG_FILE" ]]; then
         [[ $(get_bool "enable_dl_limit") == "true" ]] && dl_st="${G}● 已启用${N}" || dl_st="${R}○ 未启用${N}"
         [[ $(get_bool "enable_reannounce_opt") == "true" ]] && ra_st="${G}● 已启用${N}" || ra_st="${R}○ 未启用${N}"
-        
         u2_c=$(get_val "u2_cookie" "")
         [[ -n "$u2_c" ]] && u2_st="${G}● 已配置${N}" || u2_st="${D}○ 未配置${N}"
-
         [[ $(get_bool "flexget_enabled") == "true" ]] && flex_st="${G}● 已启用${N}" || flex_st="${R}○ 未启用${N}"
         [[ $(get_bool "autoremove_enabled") == "true" ]] && ar_st="${G}● 已启用${N}" || ar_st="${R}○ 未启用${N}"
     else
@@ -348,7 +214,7 @@ show_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. FlexGet 逻辑 (修复命令路径)
+# 3. FlexGet 功能区
 # ════════════════════════════════════════════════════════════
 get_flexget_cmd() {
     if command -v flexget &>/dev/null; then echo "flexget"
@@ -421,18 +287,14 @@ flexget_del_sub() {
     else rm -f "$tmp"; err "删除失败"; fi
 }
 
-# 修复：手动运行 FlexGet
 flexget_run_now() {
     echo ""; info "准备运行 FlexGet CLI..."
-    
-    # 自动修复缺失的命令
     local cmd=$(get_flexget_cmd)
     if [[ -z "$cmd" ]]; then
         warn "FlexGet 命令未找到，尝试自动修复..."
         pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget 2>/dev/null
         cmd=$(get_flexget_cmd)
     fi
-    
     if [[ -n "$cmd" ]]; then
         info "执行: $cmd -c $FLEXGET_CFG execute"
         $cmd -c "$FLEXGET_CFG" execute
@@ -452,7 +314,7 @@ flexget_quick_setup() {
     echo ""; read -rp "  3. 是否现在添加订阅? [Y/n]: " s
     [[ ! "$s" =~ ^[Nn] ]] && flexget_add_sub
     echo ""; read -rp "  立即重启服务生效? [Y/n]: " r
-    [[ ! "$r" =~ ^[Nn] ]] && systemctl restart qbit-smart-limit && ok "服务已重启"
+    [[ ! "$r" =~ ^[Nn] ]] && ( [ -f "$SERVICE_FILE" ] || create_service_file ) && systemctl restart qbit-smart-limit && ok "服务已重启"
 }
 
 flexget_menu() {
@@ -476,14 +338,14 @@ flexget_menu() {
             5) flexget_list_subs; read -rp "按回车继续..." ;;
             6) read -rp "  新间隔(秒): " v; [[ "$v" =~ ^[0-9]+$ ]] && set_kv "flexget_interval_sec" "$v" && systemctl restart qbit-smart-limit && ok "已更新" ;;
             7) flexget_run_now ;;
-            8) tail -n 20 "$FLEXGET_LOG"; read -rp "按回车继续..." ;;
+            8) ensure_dirs; tail -n 20 "$FLEXGET_LOG"; read -rp "按回车继续..." ;;
             0) return ;;
         esac
     done
 }
 
 # ════════════════════════════════════════════════════════════
-# 5. AutoRemove 逻辑
+# 4. AutoRemove 逻辑 (含定制默认规则)
 # ════════════════════════════════════════════════════════════
 autorm_show_rules() {
     ensure_dirs
@@ -523,6 +385,11 @@ import qbittorrentapi
 from pathlib import Path
 CFG = Path("/opt/qbit-smart-limit/config.json")
 RULES = Path("/opt/qbit-smart-limit/autoremove/rules.json")
+def fmt_size(b):
+    for u in ['B','K','M','G']:
+        if b<1024: return f"{b:.2f}{u}"
+        b/=1024
+    return f"{b:.2f}T"
 try:
     cfg = json.loads(CFG.read_text())
     rules = json.loads(RULES.read_text())
@@ -558,14 +425,20 @@ autorm_quick_setup() {
     if [[ ! "$c" =~ ^[Nn] ]]; then set_kv "autoremove_enabled" "true"; ok "模块已启用"; else set_kv "autoremove_enabled" "false"; warn "模块已禁用"; return; fi
     read -rp "  2. 检查间隔(秒) [1800]: " iv; iv=${iv:-1800}
     [[ "$iv" =~ ^[0-9]+$ ]] && set_kv "autoremove_interval_sec" "$iv" && ok "间隔已设为 ${iv}秒"
-    echo ""; info "正在检查规则..."
-    cnt=$(jq 'length' "$AUTORM_RULES" 2>/dev/null || echo 0)
-    if [[ "$cnt" -eq 0 ]]; then
-        echo '[{"name":"Default Rule","min_free_gb":10,"max_up_bps":102400,"min_low_sec":60,"require_complete":false}]' > "$AUTORM_RULES"
-        ok "已写入默认规则 (剩余空间<10G & 上传<100K)"
-    fi
+    
+    echo ""; info "写入默认删种规则..."
+    # 定制规则写入逻辑
+    cat > "$AUTORM_RULES" <<EOF
+[
+  {"name":"空间极危 (<5G)","min_free_gb":5,"max_up_bps":5242880,"min_low_sec":60,"require_complete":false},
+  {"name":"空间紧张 (<10G)","min_free_gb":10,"max_up_bps":1048576,"min_low_sec":60,"require_complete":false},
+  {"name":"完种清理 (<20G)","min_free_gb":20,"max_up_bps":524288,"min_low_sec":60,"require_complete":true}
+]
+EOF
+    ok "已写入 3 条阶梯删种规则"
+    
     echo ""; read -rp "  立即重启服务生效? [Y/n]: " r
-    [[ ! "$r" =~ ^[Nn] ]] && systemctl restart qbit-smart-limit && ok "服务已重启"
+    [[ ! "$r" =~ ^[Nn] ]] && ( [ -f "$SERVICE_FILE" ] || create_service_file ) && systemctl restart qbit-smart-limit && ok "服务已重启"
 }
 
 autorm_menu() {
@@ -590,15 +463,66 @@ autorm_menu() {
             5) autorm_del_rule ;;
             6) read -rp "  新间隔(秒): " v; [[ "$v" =~ ^[0-9]+$ ]] && set_kv "autoremove_interval_sec" "$v" && systemctl restart qbit-smart-limit && ok "已更新" ;;
             7) autorm_preview ;;
-            8) tail -n 20 "$AUTORM_LOG"; read -rp "按回车继续..." ;;
+            8) ensure_dirs; tail -n 20 "$AUTORM_LOG"; read -rp "按回车继续..." ;;
             0) return ;;
         esac
     done
 }
 
 # ════════════════════════════════════════════════════════════
-# 6. 安装与更新逻辑
+# 5. 安装与更新逻辑 (Core)
 # ════════════════════════════════════════════════════════════
+install_deps() {
+    echo ""; info "安装系统依赖..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq &>/dev/null || true
+        apt-get install -y python3 python3-pip jq curl python3-requests python3-bs4 python3-lxml -qq &>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        yum install -y python3 python3-pip jq curl -q &>/dev/null || true
+    fi
+    if ! python3 -c "import qbittorrentapi" &>/dev/null; then
+        pip3 install --break-system-packages -q qbittorrent-api flexget 2>/dev/null || pip3 install -q qbittorrent-api flexget 2>/dev/null || true
+    fi
+    ok "依赖安装完成"
+}
+
+install_source_files() {
+    mkdir -p "${INSTALL_DIR}/src"
+    local base="${GITHUB_RAW}/src"
+    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
+    for f in "${files[@]}"; do
+        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}" || return 1
+    done
+}
+
+get_input() {
+    echo ""; echo -e "  ${C}━━━━━━━━━━━━━━ qBittorrent 设置 ━━━━━━━━━━━━━━━${N}"
+    read -rp "  WebUI 地址 [http://127.0.0.1:8080]: " QB_HOST; QB_HOST=${QB_HOST:-"http://127.0.0.1:8080"}
+    read -rp "  用户名 [admin]: " QB_USER; QB_USER=${QB_USER:-"admin"}
+    read -rsp "  密码: " QB_PASS; echo ""
+    [[ -z "$QB_PASS" ]] && { err "密码不能为空"; return 1; }
+    
+    echo ""; echo -e "  ${C}━━━━━━━━━━━━━━━━ 速度设置 ━━━━━━━━━━━━━━━━━━━${N}"
+    read -rp "  目标速度 KiB/s [51200]: " TARGET; TARGET=${TARGET:-51200}
+    read -rp "  安全系数 [0.98]: " SAFETY; SAFETY=${SAFETY:-0.98}
+    read -rp "  Tracker 关键词 (留空匹配所有): " TRACKER; TRACKER=${TRACKER:-""}
+    
+    echo ""; echo -e "  ${C}━━━━━━━━━━━━━ 高级功能 (PRO) ━━━━━━━━━━━━━━━${N}"
+    read -rp "  启用下载限速? [Y/n]: " DL_LIMIT
+    [[ "$DL_LIMIT" =~ ^[Nn] ]] && ENABLE_DL_LIMIT="false" || ENABLE_DL_LIMIT="true"
+    read -rp "  启用汇报优化? [Y/n]: " RA_OPT
+    [[ "$RA_OPT" =~ ^[Nn] ]] && ENABLE_RA_OPT="false" || ENABLE_RA_OPT="true"
+    
+    echo ""; echo -e "  ${C}━━━━━━━━━━━━━ Telegram 通知 (可选) ━━━━━━━━━━━━${N}"
+    read -rp "  Bot Token: " TG_TOKEN; TG_TOKEN=${TG_TOKEN:-""}
+    TG_CHAT=""; [[ -n "$TG_TOKEN" ]] && read -rp "  Chat ID: " TG_CHAT
+    
+    echo ""; echo -e "  ${C}━━━━━━━━━━━━━━ U2 Cookie (可选) ━━━━━━━━━━━━━━━${N}"
+    read -rp "  Cookie (Value only): " U2_COOKIE; U2_COOKIE=$(clean_cookie "${U2_COOKIE:-""}")
+    read -rp "  HTTP 代理 (可选): " PROXY; PROXY=${PROXY:-""}
+    return 0
+}
+
 do_install() {
     show_banner
     echo -e "  ${W}>>> 安装 qBit Smart Limit PRO <<<${N}"; echo ""
@@ -608,8 +532,7 @@ do_install() {
     install_source_files || return 1
     
     get_input || return 1
-    echo ""
-    if ! save_config; then err "保存配置失败"; return 1; fi
+    echo ""; if ! save_config; then err "配置保存失败"; return 1; fi
     
     create_service_file
     systemctl start qbit-smart-limit && ok "服务已启动"
@@ -622,19 +545,16 @@ do_install() {
 do_update() {
     echo ""; echo -e "  ${W}>>> 检查更新 <<<${N}"
     local rv; rv=$(get_remote_ver)
-    if [[ -z "$rv" ]]; then err "获取版本失败 (网络错误?)"; return; fi
+    if [[ -z "$rv" ]]; then err "无法获取远程版本"; return; fi
     echo -e "  远程版本: ${C}$rv${N}"; echo -e "  本地版本: ${W}$(get_local_ver)${N}"
-    
     read -rp "  确认更新? [y/N]: " c
     if [[ "$c" =~ ^[Yy] ]]; then
         download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
         install_source_files
-        
-        # 修复：更新管理脚本并赋予权限
         download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
         chmod +x "$SCRIPT_PATH"
         
-        # 修复：如果服务文件不存在，自动创建
+        # 智能修复服务
         if [[ ! -f "$SERVICE_FILE" ]]; then
             warn "服务文件缺失，正在重建..."
             create_service_file
@@ -645,7 +565,7 @@ do_update() {
             ok "更新完成，服务已重启"
         else
             warn "重启失败，尝试启动..."
-            systemctl start qbit-smart-limit && ok "服务已启动" || err "服务启动失败，请检查日志"
+            systemctl start qbit-smart-limit && ok "服务已启动" || err "服务启动失败"
         fi
     fi
 }
@@ -663,6 +583,9 @@ do_uninstall() {
     ok "卸载完成"
 }
 
+# ════════════════════════════════════════════════════════════
+# 主入口
+# ════════════════════════════════════════════════════════════
 main() {
     if [[ $EUID -ne 0 ]]; then echo -e "${R}请使用 root 运行${N}"; exit 1; fi
     ensure_dirs
