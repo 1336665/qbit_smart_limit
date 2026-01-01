@@ -1,3 +1,4 @@
+cat > /opt/qbit-smart-limit/src/helper_bot.py <<EOF
 import threading
 import queue
 import requests
@@ -12,10 +13,8 @@ from .utils import logger, log_buffer, fmt_speed, fmt_duration, fmt_size, parse_
 if TYPE_CHECKING:
     from .controller import Controller
 
-# 类名修改为 Notifier 以匹配 controller.py 的调用
 class Notifier:
     def __init__(self, controller: 'Controller'):
-        # 从 controller 获取配置
         token = controller.config.telegram_bot_token
         chat_id = controller.config.telegram_chat_id
         
@@ -44,7 +43,6 @@ class Notifier:
     
     def _html_sanitize(self, msg: str) -> str:
         if not msg: return msg
-        # 简单的 HTML 标签白名单过滤
         msg = re.sub(r'&(?![a-zA-Z]+;|#\d+;|#x[0-9a-fA-F]+;)', '&amp;', str(msg))
         if '<' not in msg: return msg
         allowed = {'b','strong','i','em','u','ins','s','strike','del','code','pre','a','span','tg-spoiler','blockquote'}
@@ -97,7 +95,6 @@ class Notifier:
             )
         except: pass
 
-    # === 接收命令部分 ===
     def _poll_worker(self):
         while not self._stop.is_set():
             try:
@@ -127,7 +124,6 @@ class Notifier:
         try: handler(args)
         except Exception as e: self.send_immediate(f"❌ 命令执行出错: {e}")
 
-    # === 命令实现 (保留你原有的所有功能) ===
     def _cmd_help(self, args: str):
         msg = """🤖 <b>qBit Smart Limit 命令帮助</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -150,8 +146,7 @@ class Notifier:
             self.send_immediate("❌ 控制器未初始化")
             return
         
-        # 尝试获取逻辑层状态
-        states = getattr(self.controller.logic, 'states', {}) if hasattr(self.controller, 'logic') else {}
+        states = self.controller.states
         if not states:
             self.send_immediate("📭 当前没有正在监控的种子")
             return
@@ -163,7 +158,9 @@ class Notifier:
             name = escape_html(state.name[:25])
             phase = state.get_phase(now)
             tl = state.get_tl(now)
-            speed = state.limit_controller.kalman.speed
+            # 兼容性处理
+            speed = getattr(state.limit_controller.kalman, 'x', 0) if hasattr(state, 'limit_controller') else 0
+            
             phase_emoji = {'warmup': '🔥', 'catch': '🏃', 'steady': '⚖️', 'finish': '🎯'}.get(phase, '❓')
             lines.append(f"{phase_emoji} <b>{name}</b>")
             lines.append(f"   ↑{fmt_speed(speed)} | ⏱{tl:.0f}s | 周期#{state.cycle_index}")
@@ -210,7 +207,6 @@ class Notifier:
         self.send_immediate(msg)
 
     def _cmd_config(self, args: str):
-        # 简单的配置修改实现
         self.send_immediate("⚠️ 请使用 WebUI 或修改配置文件 config.json")
 
     def _cmd_stats(self, args: str):
@@ -219,15 +215,17 @@ class Notifier:
     def _cmd_unknown(self, args):
         self.send_immediate("❓ 未知命令，发送 /help 查看帮助")
 
-    # === 通知功能 ===
-
-    def startup(self, config, qb_version: str = ""):
+    # ==========================================
+    # 👇 关键修复：添加 u2_enabled 参数 👇
+    # ==========================================
+    def startup(self, config, qb_version: str = "", u2_enabled: bool = False):
         if not self.enabled: return
         msg = f"""🚀 <b>qBit Smart Limit 已启动</b>
 ━━━━━━━━━━━━━━━━━━━━━
 📌 <b>版本</b>: v{C.VERSION}
 🎯 目标速度: <code>{fmt_speed(config.target_bytes)}</code>
 🤖 qBittorrent: <code>{qb_version}</code>
+🌐 U2辅助: {'✅' if u2_enabled else '❌'}
 🕒 启动时间: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"""
         self.send(msg, "startup", 0)
 
@@ -258,31 +256,29 @@ class Notifier:
         msg = f"📊 <b>周期汇报 #{idx}</b>\n📛 {name}\n📤 上传: <code>{fmt_size(uploaded)}</code>\n📈 均速: <code>{fmt_speed(speed)}</code>"
         self.send(msg, f"cycle_{info.get('hash', '')}", 5)
 
-    def overspeed_warning(self, name: str, real_speed: float, target: float):
+    def overspeed_warning(self, name: str, real_speed: float, target: float, tid: int = None):
         msg = f"🚨 <b>超速警告</b>\n📛 {escape_html(name[:20])}\n⚠️ 速度: <code>{fmt_speed(real_speed)}</code>"
         self.send(msg, f"overspeed_{name[:10]}", 120)
 
-    def dl_limit_notify(self, name: str, dl_limit: float, reason: str):
+    def dl_limit_notify(self, name: str, dl_limit: float, reason: str, tid: int = None):
         msg = f"📥 <b>下载限速</b>\n📛 {escape_html(name[:20])}\n🔒 限制: <code>{fmt_speed(dl_limit*1024)}</code>\n📝 {reason}"
         self.send(msg, f"dl_limit_{name[:10]}", 60)
 
-    def reannounce_notify(self, name: str, reason: str):
+    def reannounce_notify(self, name: str, reason: str, tid: int = None):
         msg = f"🔄 <b>强制汇报</b>\n📛 {escape_html(name[:20])}\n📝 {reason}"
         self.send(msg, f"reannounce_{name[:10]}", 60)
         
     def limit_notify(self, state, speed_limit):
-        """主限速器开关通知 (兼容性保留)"""
         pass
+    
+    def shutdown_report(self):
+        if not self.enabled: return
+        self.send_immediate(f"🛑 <b>脚本已停止</b>\n⏱️ {datetime.now().strftime('%H:%M:%S')}")
 
-    # ========================================================
-    # 👇 重点修改区域：Native RSS 和 AutoRemove 通知 👇
-    # ========================================================
+    def cookie_invalid_notify(self):
+        self.send("⚠️ <b>U2 Cookie 已失效</b>，请更新配置！", "cookie_invalid", 3600)
 
     def rss_notify(self, count: int, duration: float):
-        """
-        原生 RSS 抓取通知
-        (原 flexget_notify 改名而来)
-        """
         if not self.enabled: return
         msg = f"""📡 <b>原生 RSS 抓取成功</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -291,30 +287,21 @@ class Notifier:
         self.send(msg, "rss_run", 0)
 
     def autoremove_notify(self, info: dict):
-        """
-        AutoRemove 删种通知 (增强版)
-        """
         if not self.enabled: return
-        
         name = escape_html(info.get('name', 'Unknown')).replace('[', '(').replace(']', ')')
         reason = escape_html(info.get('reason', 'Unknown'))
         size = fmt_size(info.get('size', 0))
-        
-        # 根据你的激进规则名称匹配 Emoji
         emoji = "🗑️"
-        if "极危" in reason or "红色" in reason or "🔴" in reason:
-            emoji = "🚨" # 红色警报
-        elif "空间" in reason or "高压" in reason or "🟠" in reason:
-            emoji = "⚠️" # 黄色警报
-        elif "黑车" in reason or "🚫" in reason:
-            emoji = "🚫" # 黑车拦截
-            
+        if "极危" in reason or "红色" in reason: emoji = "🚨"
+        elif "空间" in reason: emoji = "⚠️"
         msg = f"""{emoji} <b>自动删种执行</b>
 ━━━━━━━━━━━━━━━━━━━━━
 📛 <b>{name}</b>
-
 💥 <b>删除原因</b>
 └ {reason}
-
 📦 释放空间: <code>{size}</code>"""
         self.send(msg, f"autorm_{name[:10]}", 0)
+EOF
+
+systemctl restart qbit-smart-limit
+systemctl status qbit-smart-limit
