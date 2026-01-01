@@ -5,8 +5,7 @@
 #
 
 # =========================================================
-# ⚠️ 请修改此处为你的 GitHub 仓库地址
-GITHUB_RAW="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main"
+GITHUB_RAW="https://raw.githubusercontent.com/1336665/qbit_smart_limit/main"
 # =========================================================
 
 INSTALL_DIR="/opt/qbit-smart-limit"
