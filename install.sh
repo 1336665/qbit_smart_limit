@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# qBit Smart Limit 管理脚本 v11.3.5 FINAL FIX
-# 修复: FlexGet 调用方式 (Inline Python) | 确保常量一致性
+# qBit Smart Limit 管理脚本 v11.3.5 ULTIMATE
+# 修复: FlexGet Schema (category->label) | Host/Port 自动分离
 #
 
 # =========================================================
@@ -53,7 +53,6 @@ ensure_env() {
     [[ -f "$FLEXGET_SUBS" ]] || echo '{"tasks":[]}' > "$FLEXGET_SUBS"
     [[ -f "$AUTORM_RULES" ]] || echo '[]' > "$AUTORM_RULES"
     [[ -f "$FLEXGET_CFG" ]] || touch "$FLEXGET_CFG"
-    # 强制创建日志，防止 tail 报错
     touch "$FLEXGET_LOG" "$AUTORM_LOG"
     chmod 666 "$FLEXGET_LOG" "$AUTORM_LOG" 2>/dev/null || true
 }
@@ -135,34 +134,52 @@ show_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 3. FlexGet 逻辑 (Python Code Call)
+# 3. FlexGet 逻辑 (修复 Schema 错误)
 # ════════════════════════════════════════════════════════════
 flexget_regen_config() {
     python3 - <<'PY' >/dev/null 2>&1
 import json, os
+from urllib.parse import urlparse
 from pathlib import Path
+
 CFG=Path("/opt/qbit-smart-limit/config.json")
 SUBS=Path("/opt/qbit-smart-limit/flexget/subscriptions.json")
 YML=Path("/opt/qbit-smart-limit/flexget/config.yml")
+
 def load(p, d):
     try: return json.loads(p.read_text(encoding="utf-8"))
     except: return d
+
 cfg=load(CFG,{})
 subs=load(SUBS,{"tasks":[]}).get("tasks",[])
+
+# 解析 Host (自动拆分 IP 和 Port)
+raw_host = cfg.get('host','http://localhost:8080')
+if not raw_host.startswith('http'): raw_host = 'http://' + raw_host
+try:
+    parsed = urlparse(raw_host)
+    hostname = parsed.hostname or 'localhost'
+    port = parsed.port or 8080
+except:
+    hostname = 'localhost'; port = 8080
+
 tasks=[]
 for t in subs:
     name=(t.get("name") or "").strip(); rss=(t.get("rss") or "").strip()
     cat=(t.get("category") or "u2").strip(); tags=t.get("tags") or []
     if not name or not rss: continue
+    
+    # 注意: qbittorrent 插件中 'label' 才是对应 qB 的 Category
     tasks.append(f"""  {name}:
     rss: "{rss}"
     accept_all: yes
     seen: local
     qbittorrent:
-      host: "{cfg.get('host','')}"
+      host: "{hostname}"
+      port: {port}
       username: "{cfg.get('username','')}"
       password: "{cfg.get('password','')}"
-      category: "{cat}"
+      label: "{cat}"
       tags: {tags}
 """)
 YML.write_text("tasks: {}\n" if not tasks else "tasks:\n"+"".join(tasks), encoding="utf-8")
@@ -170,15 +187,14 @@ PY
 }
 
 flexget_run_now() {
-    echo ""; info "准备运行 FlexGet (Import Mode)..."
+    echo ""; info "准备运行 FlexGet..."
     
-    # 强制检查依赖
     if ! python3 -c "import flexget" &>/dev/null; then
         warn "FlexGet 模块缺失，尝试安装..."
         pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget
     fi
 
-    # 核心修复：直接用 Python 代码导入并运行，彻底解决 No module __main__ 错误
+    # 直接调用 Python 代码，规避 command not found
     python3 -c "import sys; from flexget import main; sys.argv=['flexget', '-c', '$FLEXGET_CFG', '--logfile', '$FLEXGET_LOG', 'execute']; main()"
     
     echo ""; ok "执行完毕"; read -rp "按回车继续..."
@@ -272,7 +288,7 @@ autorm_quick_setup() {
     read -rp "  2. 检查间隔(秒) [1800]: " iv; iv=${iv:-1800}
     [[ "$iv" =~ ^[0-9]+$ ]] && set_kv "autoremove_interval_sec" "$iv" && ok "间隔: ${iv}s"
     
-    echo ""; info "写入默认删种规则 (5G/10G/20G)..."
+    echo ""; info "写入 3 条阶梯规则..."
     cat > "$AUTORM_RULES" <<EOF
 [
   {"name":"空间极危 (<5G)","min_free_gb":5,"max_up_bps":5242880,"min_low_sec":60,"require_complete":false},
