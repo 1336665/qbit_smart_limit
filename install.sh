@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# qBit Smart Limit 管理脚本 v11.1.0 PRO (Fixed & Beautified)
+# qBit Smart Limit 管理脚本 v11.1.0 PRO
 # 适配 Python 集成架构 | 包含一键配置向导
 #
 
@@ -13,6 +13,7 @@ INSTALL_DIR="/opt/qbit-smart-limit"
 CONFIG_FILE="${INSTALL_DIR}/config.json"
 SERVICE_FILE="/etc/systemd/system/qbit-smart-limit.service"
 SCRIPT_PATH="/usr/local/bin/qsl"
+MAIN_PY="${INSTALL_DIR}/main.py"
 
 # 模块路径
 FLEXGET_DIR="${INSTALL_DIR}/flexget"
@@ -25,11 +26,11 @@ AUTORM_RULES="${AUTORM_DIR}/rules.json"
 AUTORM_STATE="${AUTORM_DIR}/state.json"
 AUTORM_LOG="/var/log/qsl-autoremove.log"
 
-# 颜色
+# 颜色定义
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;34m'; C='\033[0;36m'; W='\033[1;37m'; D='\033[0;90m'; N='\033[0m'
 
 # ════════════════════════════════════════════════════════════
-# 基础工具
+# 管道安装检测
 # ════════════════════════════════════════════════════════════
 if [[ ! -t 0 ]]; then
     echo ""; echo -e "  ${C}安装管理脚本...${N}"
@@ -38,6 +39,9 @@ if [[ ! -t 0 ]]; then
     exit 0
 fi
 
+# ════════════════════════════════════════════════════════════
+# 基础工具函数 (修复报错)
+# ════════════════════════════════════════════════════════════
 ok()   { echo -e "  ${G}✓${N} $1"; }
 err()  { echo -e "  ${R}✗${N} $1"; }
 warn() { echo -e "  ${Y}!${N} $1"; }
@@ -46,10 +50,10 @@ info() { echo -e "  ${C}i${N} $1"; }
 get_bool() { jq -r ".$1 // false" "$CONFIG_FILE" 2>/dev/null; }
 get_val() { jq -r ".$1 // \"$2\"" "$CONFIG_FILE" 2>/dev/null; }
 
+# 设置配置项 (兼容 bool/int/string)
 set_kv() {
     local k="$1" v="$2"
     tmp=$(mktemp)
-    # Handle boolean vs string/int
     if [[ "$v" == "true" || "$v" == "false" ]]; then
         jq ".$k = $v" "$CONFIG_FILE" > "$tmp"
     elif [[ "$v" =~ ^[0-9]+$ ]]; then
@@ -60,12 +64,77 @@ set_kv() {
     mv "$tmp" "$CONFIG_FILE" && chmod 600 "$CONFIG_FILE"
 }
 
+# 确保目录存在
 ensure_dirs() {
-    mkdir -p "$FLEXGET_DIR" "$AUTORM_DIR" "/var/log" >/dev/null 2>&1 || true
+    mkdir -p "$FLEXGET_DIR" "$AUTORM_DIR" "${INSTALL_DIR}/src" "/var/log" >/dev/null 2>&1 || true
     [[ -f "$FLEXGET_SUBS" ]] || echo '{"tasks":[]}' > "$FLEXGET_SUBS"
     [[ -f "$AUTORM_RULES" ]] || echo '[]' > "$AUTORM_RULES"
-    # 确保 config.yml 存在
     [[ -f "$FLEXGET_CFG" ]] || touch "$FLEXGET_CFG"
+}
+
+# 获取本地版本 (从 src/consts.py 读取)
+get_local_ver() {
+    [[ -f "${INSTALL_DIR}/src/consts.py" ]] && grep -oP 'VERSION = "\K[^"]+' "${INSTALL_DIR}/src/consts.py" 2>/dev/null | head -1 || echo "-"
+}
+
+# 获取远程版本
+get_remote_ver() {
+    curl -sL --connect-timeout 5 "${GITHUB_RAW}/src/consts.py" 2>/dev/null | grep -oP 'VERSION = "\K[^"]+' | head -1
+}
+
+# 简单的下载函数
+download() {
+    local url="$1" dest="$2" name="$3"
+    local tmp="/tmp/qsl_dl_$$.tmp"
+    echo -ne "  ${C}↓${N} 下载 ${name}..."
+    local http_code
+    http_code=$(curl -sL --connect-timeout 15 -w "%{http_code}" "$url" -o "$tmp" 2>/dev/null)
+    if [[ "$http_code" == "200" && -s "$tmp" ]]; then
+        mv "$tmp" "$dest"
+        [[ "$dest" == *.sh || "$dest" == *.py ]] && chmod +x "$dest"
+        echo -e "\r  ${G}✓${N} 下载 ${name}              "
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    echo -e "\r  ${R}✗${N} 下载 ${name} (HTTP $http_code)   "
+    return 1
+}
+
+# 下载所有源文件 (src目录)
+install_source_files() {
+    mkdir -p "${INSTALL_DIR}/src"
+    local base="${GITHUB_RAW}/src"
+    # 这里列出所有拆分后的文件
+    local files=("__init__.py" "consts.py" "utils.py" "config.py" "database.py" "model.py" "algorithms.py" "logic.py" "helper_web.py" "helper_bot.py" "workers.py" "controller.py")
+    
+    for f in "${files[@]}"; do
+        download "${base}/${f}" "${INSTALL_DIR}/src/${f}" "src/${f}" || return 1
+    done
+    return 0
+}
+
+# 安装依赖
+install_deps() {
+    echo ""; info "安装系统依赖..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq &>/dev/null || true
+        apt-get install -y python3 python3-pip jq curl python3-requests python3-bs4 python3-lxml -qq &>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        yum install -y python3 python3-pip jq curl -q &>/dev/null || true
+    fi
+    
+    ok "系统依赖"
+    info "检查 Python 依赖..."
+    
+    if ! python3 -c "import qbittorrentapi" &>/dev/null; then
+        pip3 install --break-system-packages -q qbittorrent-api 2>/dev/null || pip3 install -q qbittorrent-api 2>/dev/null || true
+    fi
+    # 尝试安装 FlexGet (可选)
+    if ! command -v flexget &>/dev/null; then
+        pip3 install --break-system-packages -q flexget 2>/dev/null || pip3 install -q flexget 2>/dev/null || true
+    fi
+    ok "Python 依赖"
+    return 0
 }
 
 # ════════════════════════════════════════════════════════════
@@ -467,8 +536,55 @@ autorm_menu() {
 }
 
 # ════════════════════════════════════════════════════════════
-# 安装与更新
+# 核心安装逻辑
 # ════════════════════════════════════════════════════════════
+do_install() {
+    show_banner
+    echo -e "  ${W}>>> 安装 qBit Smart Limit PRO <<<${N}"
+    echo ""
+    install_deps || return 1
+    mkdir -p "$INSTALL_DIR"
+    
+    download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py" || return 1
+    install_source_files || return 1
+    
+    # 简单的配置生成（如果不存在）
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "{}" > "$CONFIG_FILE"
+        # 使用 jq 初始化一个最小配置
+        jq -n '{"log_level":"INFO"}' > "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
+        ok "已生成空配置文件，请使用菜单配置"
+    fi
+    
+    # 创建服务
+    cat > "$SERVICE_FILE" << EOFSVC
+[Unit]
+Description=qBit Smart Limit Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 $MAIN_PY
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOFSVC
+    systemctl daemon-reload
+    systemctl enable qbit-smart-limit &>/dev/null || true
+    systemctl start qbit-smart-limit && ok "服务已启动"
+    
+    # 更新本地脚本
+    download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本" || true
+    chmod +x "$SCRIPT_PATH"
+    
+    echo ""
+    echo -e "  ${G}安装完成! 运行 qsl 打开菜单${N}"
+}
+
 do_update() {
     echo ""; echo -e "  ${W}>>> 检查更新 <<<${N}"
     local rv; rv=$(get_remote_ver)
@@ -476,10 +592,11 @@ do_update() {
     echo -e "  远程版本: ${C}$rv${N}"; echo -e "  本地版本: ${W}$(get_local_ver)${N}"
     read -rp "  确认更新? [y/N]: " c
     if [[ "$c" =~ ^[Yy] ]]; then
-        curl -sL "${GITHUB_RAW}/main.py" -o "$MAIN_PY"
-        # 简单处理：这里应该递归下载 src，简化为提示
-        echo "请重新运行安装脚本以完整更新 src 目录"
-        # 实际使用建议 download 整个 src
+        download "${GITHUB_RAW}/main.py" "$MAIN_PY" "main.py"
+        install_source_files
+        download "${GITHUB_RAW}/install.sh" "$SCRIPT_PATH" "管理脚本"
+        systemctl restart qbit-smart-limit
+        ok "更新完成"
     fi
 }
 
@@ -487,8 +604,8 @@ do_uninstall() {
     echo ""; echo -e "  ${R}>>> 卸载 <<<${N}"
     read -rp "  确认卸载? [y/N]: " confirm
     [[ ! "$confirm" =~ ^[Yy] ]] && return
-    systemctl stop qbit-smart-limit
-    systemctl disable qbit-smart-limit
+    systemctl stop qbit-smart-limit 2>/dev/null
+    systemctl disable qbit-smart-limit 2>/dev/null
     rm -f "$SERVICE_FILE" "$SCRIPT_PATH"
     systemctl daemon-reload
     read -rp "  删除配置文件? [y/N]: " d
