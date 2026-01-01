@@ -11,11 +11,12 @@ from .config import Config
 from .database import Database
 from .model import TorrentState, Stats
 from .algorithms import _precision_tracker
-from .helper_bot import TelegramBot
+# [修改] 引入新的 Notifier
+from .helper_bot import Notifier
 from .helper_web import U2WebHelper, BS4_AVAILABLE
 from .logic import DownloadLimiter, ReannounceOptimizer
-# 新增引入
-from .workers import FlexGetWorker, AutoRemoveWorker
+# [修改] 引入 NativeRssWorker
+from .workers import NativeRssWorker, AutoRemoveWorker
 
 class Controller:
     ACTIVE = frozenset({'downloading', 'seeding', 'uploading', 'forcedUP', 'stalledUP', 
@@ -44,7 +45,8 @@ class Controller:
             self.stats.load_from_db(db_stats)
             logger.info(f"📦 已从数据库恢复统计: {self.stats.total} 个周期")
         
-        self.notifier = TelegramBot(cfg.telegram_bot_token, cfg.telegram_chat_id, self)
+        # [修改] 初始化 Notifier (参数简化，内部读取 config)
+        self.notifier = Notifier(self)
         
         self.u2_helper: Optional[U2WebHelper] = None
         self.u2_enabled = False
@@ -60,10 +62,10 @@ class Controller:
         self.modified_dl: set = set()
         self._api_times: deque = deque(maxlen=200)
         
-        # 启动后台 Worker
-        self.flexget_worker = FlexGetWorker(self)
+        # [修改] 启动 Native RSS Worker
+        self.rss_worker = NativeRssWorker(self)
         self.autoremove_worker = AutoRemoveWorker(self)
-        self.flexget_worker.start()
+        self.rss_worker.start()
         self.autoremove_worker.start()
         
         self._pending_tid_searches: queue.Queue = queue.Queue()
@@ -99,7 +101,11 @@ class Controller:
         logger.info("🛑 正在停止服务...")
         self.running = False
         self._save_all_to_db()
-        self.notifier.shutdown_report()
+        
+        # [修改] 安全调用 shutdown_report
+        if hasattr(self.notifier, 'shutdown_report'):
+            self.notifier.shutdown_report()
+            
         if self.client:
             try:
                 if self.modified_up: self.client.torrents_set_upload_limit(-1, list(self.modified_up))
@@ -206,7 +212,7 @@ class Controller:
             state.waiting_reannounce = False
             state.last_announce_time = wall_time()
             logger.warning(f"[{state.name[:16]}] 🔄 强制汇报: {reason}")
-            self.notifier.reannounce_notify(state.name, reason, state.tid)
+            self.notifier.reannounce_notify(state.name, reason)
         except: pass
 
     def _get_effective_target(self) -> int:
@@ -225,7 +231,7 @@ class Controller:
         
         if real_speed > C.SPEED_LIMIT * 1.05:
             logger.warning(f"[{state.name[:15]}] ⚠️ 超速 {fmt_speed(real_speed)}!")
-            self.notifier.overspeed_warning(state.name, real_speed, target, state.tid)
+            self.notifier.overspeed_warning(state.name, real_speed, target)
             return C.MIN_LIMIT, "超速刹车"
         
         if state.waiting_reannounce: return C.REANNOUNCE_WAIT_LIMIT * 1024, "等待汇报"
@@ -374,7 +380,7 @@ class Controller:
                 state.dl_limited_this_cycle = True
                 if state.last_dl_limit <= 0:
                     logger.warning(f"[{torrent.name[:16]}] 📥 下载限速: {dl_limit}K")
-                    self.notifier.dl_limit_notify(torrent.name, dl_limit, dl_reason, state.tid)
+                    self.notifier.dl_limit_notify(torrent.name, dl_limit, dl_reason)
             elif state.last_dl_limit > 0: logger.info(f"[{torrent.name[:16]}] 📥 解除限速")
             dl_actions.setdefault(dl_limit * 1024 if dl_limit > 0 else -1, []).append(h)
             self.modified_dl.add(h)
@@ -412,4 +418,3 @@ class Controller:
             elapsed = wall_time() - start
             sleep = 0.15 if min_tl <= 5 else (0.25 if min_tl <= 15 else (0.4 if min_tl <= 30 else (0.8 if min_tl <= 90 else 1.5)))
             time.sleep(max(0.1, sleep - elapsed))
-
