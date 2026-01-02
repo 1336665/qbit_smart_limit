@@ -5,7 +5,7 @@
 
 # =========================================================
 # ⚠️ [发布前修改] 请将此处修改为你 GitHub 仓库的 RAW 地址
-GITHUB_RAW="https://raw.githubusercontent.com/1336666/qbit_smart_limit/main"
+GITHUB_RAW="https://raw.githubusercontent.com/1336665/qbit_smart_limit/main"
 # =========================================================
 
 # 环境变量
