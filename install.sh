@@ -90,67 +90,140 @@ download() {
 
 show_ui() {
     clear
-    local ver=$(get_local_ver)
-    
-    # 状态检测
-    local s_inst="${G}● 已安装${N}"
-    if [[ ! -f "$MAIN_PY" ]]; then s_inst="${R}○ 未安装${N}"; ver="N/A"; fi
-    
-    local s_serv="${R}○ 已停止${N}"
-    if systemctl is-active --quiet qbit-smart-limit; then s_serv="${G}● 运行中${N}"; fi
-    
-    local s_u2="${GR}○ 未配置${N}" s_dl="${GR}○ 未配置${N}" s_tg="${GR}○ 未配置${N}" s_opt="${GR}○ 未配置${N}" s_rss="${GR}○ 未配置${N}" s_ar="${GR}○ 未配置${N}"
-    
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # 读取配置状态
-        [[ $(get_val "u2_cookie") != "" ]] && s_u2="${G}● 已启用${N}" || s_u2="${GR}○ 未启用${N}"
-        [[ $(get_bool "enable_dl_limit") == "true" ]] && s_dl="${G}● 已启用${N}" || s_dl="${GR}○ 已禁用${N}"
-        [[ $(get_val "telegram_bot_token") != "" ]] && s_tg="${W}见配置${N}" || s_tg="${GR}未配置${N}"
-        [[ $(get_bool "enable_reannounce_opt") == "true" ]] && s_opt="${G}● 已启用${N}" || s_opt="${GR}○ 已禁用${N}"
-        [[ $(get_bool "flexget_enabled") == "true" ]] && s_rss="${G}● 运行中${N}" || s_rss="${GR}○ 已暂停${N}"
-        [[ $(get_bool "autoremove_enabled") == "true" ]] && s_ar="${G}● 运行中${N}" || s_ar="${GR}○ 已暂停${N}"
+    echo ""
+    echo -e "${C}  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${N}"
+    echo -e "${C}  ┃${N}  ${G} ██████  ${W}██████  ${C}██${N} ████████   ${G}███████${N} ${W}██${N}          ${C}┃${N}"
+    echo -e "${C}  ┃${N}  ${G}██    ██ ${W}██   ██ ${C}██${N}    ██      ${G}██     ${N} ${W}██${N}          ${C}┃${N}"
+    echo -e "${C}  ┃${N}  ${G}██    ██ ${W}██████  ${C}██${N}    ██      ${G}███████${N} ${W}██${N}          ${C}┃${N}"
+    echo -e "${C}  ┃${N}  ${G}██ ▄▄ ██ ${W}██   ██ ${C}██${N}    ██           ${G}██${N} ${W}██${N}          ${C}┃${N}"
+    echo -e "${C}  ┃${N}  ${G} ██████  ${W}██████  ${C}██${N}    ██      ${G}███████${N} ${W}███████${N}     ${C}┃${N}"
+    echo -e "${C}  ┃${N}  ${G}    ▀▀${N}                                              ${C}┃${N}"
+    echo -e "${C}  ┃${N}              ${Y}PT 上传速度精准控制器${N}                   ${C}┃${N}"
+    echo -e "${C}  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${N}"
+    echo ""
+
+    # 安装状态
+    local inst_st serv_st local_v u2_st dl_st ra_st tg_st fg_st ar_st
+    if is_installed; then
+        inst_st="${G}● 已安装${N}"
+        local_v=$(get_local_ver)
+    else
+        inst_st="${Y}○ 未安装${N}"
+        local_v="-"
     fi
 
-    # 绘制头部
-    echo ""
-    echo -e "${B}      ──────────────────────────────────────────────${N}"
-    echo -e "               ${Y}PT 上传速度精准控制器${N}"
-    echo -e "${B}      ──────────────────────────────────────────────${N}"
-    echo ""
-    
-    # 绘制状态框 (使用 printf 对齐)
-    echo -e "      ${GR}┌──────────────────────────────────────────────┐${N}"
-    printf "      ${GR}│${N}  安装状态 %-16b  服务状态 %-16b  ${GR}│${N}\n" "$s_inst" "$s_serv"
-    printf "      ${GR}│${N}  程序版本 %-14s  脚本版本 %-14s  ${GR}│${N}\n" "${C}${ver}${N}" "${C}v3.7.0${N}"
-    echo -e "      ${GR}│${N}  ${GR}──────────────────────────────────────────${N}  ${GR}│${N}"
-    printf "      ${GR}│${N}  U2 辅助  %-16b  Telegram %-16b  ${GR}│${N}\n" "$s_u2" "$s_tg"
-    printf "      ${GR}│${N}  下载限速 %-16b  汇报优化 %-16b  ${GR}│${N}\n" "$s_dl" "$s_opt"
-    printf "      ${GR}│${N}  原生 RSS %-16b  AutoRemove %-14b  ${GR}│${N}\n" "$s_rss" "$s_ar"
-    echo -e "      ${GR}└──────────────────────────────────────────────┘${N}"
+    # 服务状态
+    if is_running; then
+        serv_st="${G}● 运行中${N}"
+    else
+        serv_st="${R}○ 已停止${N}"
+    fi
 
+    # Telegram 状态（只看配置是否填写）
+    tg_st="${D}○ 未配置${N}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local tg_token
+        tg_token=$(jq -r '.telegram_bot_token // ""' "$CONFIG_FILE" 2>/dev/null)
+        if [[ -n "$tg_token" && "$tg_token" != "null" ]]; then
+            tg_st="${G}● 已配置${N}"
+        fi
+    fi
+
+    # U2 状态
+    u2_st="${D}○ 未配置${N}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local u2_cookie
+        u2_cookie=$(jq -r '.u2_cookie // ""' "$CONFIG_FILE" 2>/dev/null)
+        if [[ -n "$u2_cookie" && "$u2_cookie" != "null" ]]; then
+            if python3 -c "from bs4 import BeautifulSoup" &>/dev/null; then
+                u2_st="${G}● 已启用${N}"
+            else
+                u2_st="${Y}● 缺bs4${N}"
+            fi
+        fi
+    fi
+
+    # 下载限速状态
+    dl_st="${D}○ 未配置${N}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local dl_enabled
+        dl_enabled=$(get_bool "enable_dl_limit" "true")
+        if [[ "$dl_enabled" == "true" ]]; then
+            dl_st="${G}● 已启用${N}"
+        else
+            dl_st="${R}○ 未启用${N}"
+        fi
+    fi
+
+    # 汇报优化状态
+    ra_st="${D}○ 未配置${N}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local ra_enabled
+        ra_enabled=$(get_bool "enable_reannounce_opt" "true")
+        if [[ "$ra_enabled" == "true" ]]; then
+            ra_st="${G}● 已启用${N}"
+        else
+            ra_st="${R}○ 未启用${N}"
+        fi
+    fi
+
+    # 抓种器（原 自动抓种 入口，对应 config: autograb_enabled）
+    fg_st="${D}○ 未配置${N}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local fg_enabled
+        fg_enabled=$(get_bool "autograb_enabled" "false")
+        if [[ "$fg_enabled" == "true" ]]; then
+            fg_st="${G}● 已启用${N}"
+        else
+            fg_st="${R}○ 未启用${N}"
+        fi
+    fi
+
+    # AutoRemove（对应 config: autoremove_enabled）
+    ar_st="${D}○ 未配置${N}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local ar_enabled
+        ar_enabled=$(get_bool "autoremove_enabled" "false")
+        if [[ "$ar_enabled" == "true" ]]; then
+            ar_st="${G}● 已启用${N}"
+        else
+            ar_st="${R}○ 未启用${N}"
+        fi
+    fi
+
+    echo -e "  ${D}┌────────────────────────────────────────────────────────────────┐${N}"
+    echo -e "  ${D}│${N}  ${W}安装状态${N}  ${inst_st}        ${W}服务状态${N}  ${serv_st}            ${D}│${N}"
+    echo -e "  ${D}│${N}  ${W}程序版本${N}  ${C}${local_v}${N}              ${W}脚本版本${N}  ${D}v${SCRIPT_VER}${N}               ${D}│${N}"
+    echo -e "  ${D}├────────────────────────────────────────────────────────────────┤${N}"
+    echo -e "  ${D}│${N}  ${W}U2 辅助${N}   ${u2_st}        ${W}Telegram${N}  ${tg_st}               ${D}│${N}"
+    echo -e "  ${D}│${N}  ${W}下载限速${N}  ${dl_st}        ${W}汇报优化${N}  ${ra_st}            ${D}│${N}"
+    echo -e "  ${D}│${N}  ${W}自动抓种${N}    ${fg_st}      ${W}AutoRemove${N} ${ar_st}        ${D}│${N}"
+    echo -e "  ${D}└────────────────────────────────────────────────────────────────┘${N}"
     echo ""
-    echo -e "      ${B}──────${N} ${W}主菜单${N} ${B}──────${N}"
+
+    echo -e "  ${C}━━━━━━━━━━━━━━━━━━━━ 主菜单 ━━━━━━━━━━━━━━━━━━━━${N}"
     echo ""
-    echo -e "      ${C}1.${N} 全新安装            ${C}2.${N} 修改配置"
-    echo -e "      ${C}3.${N} 查看状态            ${C}4.${N} 查看日志"
+    echo -e "     ${G}1${N}. 全新安装              ${G}2${N}. 修改配置"
+    echo -e "     ${G}3${N}. 查看状态              ${G}4${N}. 查看日志"
     echo ""
-    echo -e "      ${B}──────${N} ${W}服务管理${N} ${B}──────${N}"
+    echo -e "  ${C}━━━━━━━━━━━━━━━━━━ 服务管理 ━━━━━━━━━━━━━━━━━━━━${N}"
     echo ""
-    echo -e "      ${Y}5.${N} 启动服务            ${Y}6.${N} 停止服务"
-    echo -e "      ${Y}7.${N} 重启服务"
+    echo -e "     ${Y}5${N}. 启动服务              ${Y}6${N}. 停止服务"
+    echo -e "     ${Y}7${N}. 重启服务"
     echo ""
-    echo -e "      ${B}──────${N} ${W}其他${N} ${B}──────${N}"
+    echo -e "  ${C}━━━━━━━━━━━━━━━━━━ 功能扩展 ━━━━━━━━━━━━━━━━━━━━${N}"
     echo ""
-    echo -e "      ${C}8.${N} 检查更新            ${R}9.${N} 卸载程序"
+    echo -e "     ${G}10${N}. 抓种器管理 (自动抓种)   ${G}11${N}. AutoRemove 删种管理"
     echo ""
-    echo -e "      ${B}──────${N} ${W}自动化${N} ${B}──────${N}"
+    echo -e "  ${C}━━━━━━━━━━━━━━━━━━━ 其他 ━━━━━━━━━━━━━━━━━━━━━━${N}"
     echo ""
-    echo -e "      ${C}10.${N} Native RSS 自动抓种"
-    echo -e "      ${C}11.${N} AutoRemove 自动删种"
+    echo -e "     ${G}8${N}. 检查更新              ${R}9${N}. 卸载程序"
+    echo -e "     ${D}0${N}. 退出"
     echo ""
-    echo -e "      ${GR}0. 退出${N}"
+    echo -e "  ${C}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
     echo ""
 }
+
 
 # ────────────────────────────────────────────────────────────
 # 功能实现 (逻辑部分)
@@ -231,8 +304,8 @@ rss_manager() {
         case "$op" in
             1) rss_add_wizard ;;
             2) rss_del ;;
-            3) cur=$(get_val "flexget_interval_sec"); read -rp "  当前 ${cur}s，新间隔: " nv; [[ "$nv" =~ ^[0-9]+$ ]] && set_kv "flexget_interval_sec" "$nv" && systemctl restart qbit-smart-limit ;;
-            4) cur=$(get_bool "flexget_enabled"); [[ "$cur" == "true" ]] && set_kv "flexget_enabled" "false" || set_kv "flexget_enabled" "true"; systemctl restart qbit-smart-limit ;;
+            3) cur=$(get_val "autograb_interval_sec"); read -rp "  当前 ${cur}s，新间隔: " nv; [[ "$nv" =~ ^[0-9]+$ ]] && set_kv "autograb_interval_sec" "$nv" && systemctl restart qbit-smart-limit ;;
+            4) cur=$(get_bool "autograb_enabled"); [[ "$cur" == "true" ]] && set_kv "autograb_enabled" "false" || set_kv "autograb_enabled" "true"; systemctl restart qbit-smart-limit ;;
             0) return ;;
         esac
     done
@@ -282,7 +355,7 @@ do_install() {
   "host": "$h", "username": "$u", "password": "$(json_escape "$p")",
   "target_speed_kib": 51200, "safety_margin": 0.98, "log_level": "INFO",
   "telegram_bot_token": "", "telegram_chat_id": "", "u2_cookie": "",
-  "flexget_enabled": false, "flexget_interval_sec": 120,
+  "autograb_enabled": false, "autograb_interval_sec": 120,
   "autoremove_enabled": false, "autoremove_interval_sec": 60
 }
 EOF
@@ -309,7 +382,9 @@ main() {
     ensure_env
     while true; do
         show_ui
-        read -rp "  请输入数字 [0-11]: " choice
+        read -rp "  请选择 [0-11]: " choice
+        choice="${choice//$'\r'/}"
+        choice="${choice//[[:space:]]/}"
         case "$choice" in
             1) do_install ;;
             2) if command -v nano >/dev/null; then nano "$CONFIG_FILE"; else vi "$CONFIG_FILE"; fi; systemctl restart qbit-smart-limit ;;
@@ -323,7 +398,7 @@ main() {
             10) rss_manager ;;
             11) autorm_manager ;;
             0) exit 0 ;;
-            *) ;;
+            *) echo -e "  ${R}无效选择${N}"; sleep 1 ;;
         esac
     done
 }
